@@ -32,11 +32,13 @@ void SerialMenu::poll() {
     char c = (char)Serial.read();
     if (c == '\r') continue;
     if (c == '\n') {
+      Serial.println();
       String line = _lineBuffer;
       line.trim();
       _lineBuffer = "";
       handleLine(line);
     } else {
+      Serial.write(c);
       _lineBuffer += c;
     }
   }
@@ -160,17 +162,18 @@ void SerialMenu::handleNetworkMenu(const String& line) {
     int found = WiFi.scanNetworks();
     _scanCount = (found > 0) ? (found > 30 ? 30 : (uint8_t)found) : 0;
 
+    Serial.println("   1. Enter SSID manually");
     if (_scanCount == 0) {
       Serial.println("No networks found.");
     } else {
       for (uint8_t i = 0; i < _scanCount; i++) {
         char entry[80];
-        snprintf(entry, sizeof(entry), "  %2u. %-32s (%d dBm)%s", i + 1, WiFi.SSID(i).c_str(),
+        snprintf(entry, sizeof(entry), "  %2u. %-32s (%d dBm)%s", i + 2, WiFi.SSID(i).c_str(),
                  WiFi.RSSI(i), WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? " [open]" : "");
         Serial.println(entry);
       }
     }
-    Serial.println("   0. Enter SSID manually");
+    Serial.println("   0. Back to Main Menu");
     Serial.print("Select network number: ");
     _prompt = Prompt::WIFI_SSID_CHOICE;
   } else if (line == "2") {
@@ -451,12 +454,16 @@ void SerialMenu::handlePrompt(const String& line) {
   switch (prompt) {
     case Prompt::WIFI_SSID_CHOICE: {
       int choice = line.toInt();
-      if (choice == 0) {
+      if (choice == 1) {
         WiFi.scanDelete();
         Serial.print("Enter Wi-Fi SSID: ");
         _prompt = Prompt::WIFI_SSID;
-      } else if (choice >= 1 && choice <= _scanCount) {
-        String ssid = WiFi.SSID(choice - 1);
+      } else if (choice == 0) {
+        WiFi.scanDelete();
+        _screen = Screen::MAIN;
+        printMainMenu();
+      } else if (choice >= 2 && choice <= _scanCount + 1) {
+        String ssid = WiFi.SSID(choice - 2);
         ssid.toCharArray(cfg.wifi.ssid, sizeof(cfg.wifi.ssid));
         Serial.print("SSID set to: ");
         Serial.println(ssid);
