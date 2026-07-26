@@ -20,24 +20,18 @@
 #define VISCA_ADDR_CAM3 0x83
 #define VISCA_ADDR_CAM4 0x84
 #define VISCA_ADDR_CAM5 0x85
+#define VISCA_ADDR_CAM6 0x86
+#define VISCA_ADDR_CAM7 0x87
 #define VISCA_ADDR_BROADCAST 0x88
 #define VISCA_ADDR_REWRITE_TARGET 0x81
 
 // ---- Network ----
 #define DEFAULT_CAMERA_PORT 5678
 #define SONY_VISCA_PORT 52381
-
-// ---- Wi-Fi AP fallback ----
-#define AP_FALLBACK_SSID "ESP32-VISCA-GW"
-#define AP_FALLBACK_PASSWORD "visca1234"
-#define AP_FALLBACK_IP IPAddress(192, 168, 4, 1)
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 
-// ---- Web server ----
-#define WEB_SERVER_PORT 80
-
-// ---- Target devices ----
-#define MAX_TARGET_DEVICES 8
+// ---- Camera routing slots ----
+#define CAMERA_SLOT_COUNT 7
 
 // ---- Diagnostics ----
-#define DIAG_LOG_DEPTH 10
+#define DIAG_LOG_DEPTH 20

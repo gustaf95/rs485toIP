@@ -1,15 +1,30 @@
 #include "IpViscaClient.h"
+#include <WiFiClient.h>
+
+namespace {
+constexpr uint32_t kTcpConnectTimeoutMs = 1000;
+}  // namespace
 
 void IpViscaClient::begin() {
   _udp.begin(0);  // 임의의 로컬 포트 사용 (송신 전용)
 }
 
-bool IpViscaClient::send(const IPAddress& ip, uint16_t port, const uint8_t* data, uint8_t len) {
+bool IpViscaClient::sendUdp(const IPAddress& ip, uint16_t port, const uint8_t* data, uint8_t len) {
   if (_udp.beginPacket(ip, port) == 0) {
     return false;
   }
   _udp.write(data, len);
   return _udp.endPacket() != 0;
+}
+
+bool IpViscaClient::sendTcp(const IPAddress& ip, uint16_t port, const uint8_t* data, uint8_t len) {
+  WiFiClient client;
+  if (!client.connect(ip, port, kTcpConnectTimeoutMs)) {
+    return false;
+  }
+  size_t written = client.write(data, len);
+  client.stop();
+  return written == len;
 }
 
 uint8_t IpViscaClient::receive(uint8_t* outBuffer, uint8_t maxLen, IPAddress* remoteIp) {

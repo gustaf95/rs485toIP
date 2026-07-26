@@ -13,57 +13,80 @@ String viscaBytesToHex(const uint8_t* data, uint8_t len) {
 }
 
 void Diagnostics::begin() {
-  // 카운터/로그는 기본값(0, "-")으로 시작한다.
+  // 카운터/로그는 기본값(0, 빈 문자열)으로 시작한다.
 }
 
-void Diagnostics::pushLog(String* ring, const String& entry) {
+void Diagnostics::pushLog(const String& entry) {
   for (int i = DIAG_LOG_DEPTH - 1; i > 0; i--) {
-    ring[i] = ring[i - 1];
+    _recentLog[i] = _recentLog[i - 1];
   }
-  ring[0] = entry;
+  _recentLog[0] = entry;
 }
 
 void Diagnostics::recordRs485Rx(const uint8_t* data, uint8_t len) {
-  _rs485RxCount++;
-  _lastRs485Rx = viscaBytesToHex(data, len);
-  pushLog(_rxLog, _lastRs485Rx);
+  _rs485RxTotal++;
+  pushLog("[RX] " + viscaBytesToHex(data, len));
 }
 
-void Diagnostics::recordIpTx(const uint8_t* data, uint8_t len, const String& target) {
-  _ipTxCount++;
-  _lastIpTx = viscaBytesToHex(data, len) + " -> " + target;
-  pushLog(_txLog, _lastIpTx);
+void Diagnostics::recordForwarded(const uint8_t* data, uint8_t len, const String& target) {
+  _forwarded++;
+  pushLog("[TX] " + target + " | " + viscaBytesToHex(data, len));
 }
 
-void Diagnostics::recordIgnored(const uint8_t* data, uint8_t len, const String& reason) {
-  String entry = viscaBytesToHex(data, len) + " (" + reason + ")";
-  pushLog(_ignoredLog, entry);
+void Diagnostics::recordIgnoredNoIp(const uint8_t* data, uint8_t len) {
+  _ignoredNoIp++;
+  pushLog("[ACTION] Ignored (no IP): " + viscaBytesToHex(data, len));
+}
+
+void Diagnostics::recordBroadcastRx() {
+  _broadcastRx++;
+}
+
+void Diagnostics::recordBroadcastForwarded(uint8_t count) {
+  _broadcastForwarded += count;
+}
+
+void Diagnostics::recordIpTxSuccess() {
+  _ipTxSuccess++;
+}
+
+void Diagnostics::recordIpTxFailed() {
+  _ipTxFailed++;
+}
+
+void Diagnostics::recordRs485TxResponse() {
+  _rs485TxResponse++;
 }
 
 void Diagnostics::recordMalformed() {
-  _malformedCount++;
-  _errorCount++;
+  _malformedPacket++;
 }
 
 void Diagnostics::recordOverflow() {
-  _overflowCount++;
-  _errorCount++;
+  _bufferOverflow++;
 }
 
 void Diagnostics::recordTimeout() {
-  _timeoutCount++;
+  _packetTimeout++;
 }
 
 void Diagnostics::recordWifiReconnect() {
-  _wifiReconnectCount++;
+  _wifiReconnect++;
 }
 
-void Diagnostics::recordTxError() {
-  _errorCount++;
-}
-
-void Diagnostics::setLastRoutingResult(const String& result) {
-  _lastRoutingResult = result;
+void Diagnostics::resetCounters() {
+  _rs485RxTotal = 0;
+  _forwarded = 0;
+  _ignoredNoIp = 0;
+  _broadcastRx = 0;
+  _broadcastForwarded = 0;
+  _ipTxSuccess = 0;
+  _ipTxFailed = 0;
+  _rs485TxResponse = 0;
+  _malformedPacket = 0;
+  _bufferOverflow = 0;
+  _packetTimeout = 0;
+  _wifiReconnect = 0;
 }
 
 String Diagnostics::uptimeString() const {
