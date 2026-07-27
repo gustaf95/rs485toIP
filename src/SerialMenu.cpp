@@ -53,6 +53,8 @@ void SerialMenu::handleLine(const String& line) {
   switch (_screen) {
     case Screen::MAIN: handleMainMenu(line); break;
     case Screen::NETWORK: handleNetworkMenu(line); break;
+    case Screen::IP_MODE: handleIpModeMenu(line); break;
+    case Screen::STATIC_IP: handleStaticIpMenu(line); break;
     case Screen::RS485: handleRs485Menu(line); break;
     case Screen::ROUTING: handleRoutingMenu(line); break;
     case Screen::COUNTERS: handleCountersMenu(line); break;
@@ -151,7 +153,6 @@ void SerialMenu::printNetworkMenu() {
   Serial.println("  2. Set Wi-Fi Password");
   Serial.println("  3. Set DHCP / Static IP");
   Serial.println("  4. Retry Wi-Fi Connection");
-  Serial.println("  5. Save Network Settings");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -180,23 +181,105 @@ void SerialMenu::handleNetworkMenu(const String& line) {
     Serial.print("Enter Wi-Fi Password: ");
     _prompt = Prompt::WIFI_PASSWORD;
   } else if (line == "3") {
-    Serial.println("1. DHCP");
-    Serial.println("2. Static");
-    Serial.print("> ");
-    _prompt = Prompt::WIFI_MODE_CHOICE;
+    _screen = Screen::IP_MODE;
+    printIpModeMenu();
   } else if (line == "4") {
     Serial.println("Retrying Wi-Fi connection...");
     if (_wifiRetry) _wifiRetry();
-    printNetworkMenu();
-  } else if (line == "5") {
-    _storage.save(_routing.get());
-    Serial.println("Network settings saved.");
     printNetworkMenu();
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
   } else {
     printNetworkMenu();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DHCP / Static IP
+// ---------------------------------------------------------------------------
+
+void SerialMenu::printIpModeMenu() {
+  SystemConfig& cfg = _routing.get();
+
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println(" 1.3 Set DHCP / Static IP");
+  Serial.println("============================================================");
+  Serial.println();
+  Serial.print("  Current Mode     : ");
+  Serial.println(cfg.wifi.useDhcp ? "DHCP" : "Static IP");
+  Serial.println();
+  Serial.println("------------------------------------------------------------");
+  Serial.println(" Options");
+  Serial.println("------------------------------------------------------------");
+  Serial.println("  1. Use DHCP");
+  Serial.println("  2. Configure Static IP");
+  Serial.println("  0. Back to Network Settings");
+  Serial.print("> ");
+}
+
+void SerialMenu::handleIpModeMenu(const String& line) {
+  SystemConfig& cfg = _routing.get();
+
+  if (line == "1") {
+    cfg.wifi.useDhcp = true;
+    _storage.save(cfg);
+    Serial.println("DHCP selected and saved to flash.");
+    printIpModeMenu();
+  } else if (line == "2") {
+    cfg.wifi.useDhcp = false;
+    _storage.save(cfg);
+    _screen = Screen::STATIC_IP;
+    printStaticIpMenu();
+  } else if (line == "0") {
+    _screen = Screen::NETWORK;
+    printNetworkMenu();
+  } else {
+    printIpModeMenu();
+  }
+}
+
+void SerialMenu::printStaticIpMenu() {
+  SystemConfig& cfg = _routing.get();
+
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println(" 1.3.2 Configure Static IP");
+  Serial.println("============================================================");
+  Serial.println();
+  Serial.print("  IP Address       : ");
+  Serial.println(cfg.wifi.staticIp.toIPAddress().toString());
+  Serial.print("  Gateway          : ");
+  Serial.println(cfg.wifi.gateway.toIPAddress().toString());
+  Serial.print("  Subnet Mask      : ");
+  Serial.println(cfg.wifi.subnet.toIPAddress().toString());
+  Serial.println();
+  Serial.println("------------------------------------------------------------");
+  Serial.println(" Options");
+  Serial.println("------------------------------------------------------------");
+  Serial.println("  1. Set IP Address");
+  Serial.println("  2. Set Gateway");
+  Serial.println("  3. Set Subnet Mask");
+  Serial.println("  0. Back to DHCP / Static IP menu");
+  Serial.print("> ");
+}
+
+void SerialMenu::handleStaticIpMenu(const String& line) {
+  if (line == "1") {
+    Serial.print("Enter Static IP (a.b.c.d): ");
+    _prompt = Prompt::STATIC_IP_VALUE;
+  } else if (line == "2") {
+    Serial.print("Enter Gateway (a.b.c.d): ");
+    _prompt = Prompt::STATIC_GATEWAY_VALUE;
+  } else if (line == "3") {
+    Serial.print("Enter Subnet Mask (a.b.c.d): ");
+    _prompt = Prompt::STATIC_SUBNET_VALUE;
+  } else if (line == "0") {
+    _screen = Screen::IP_MODE;
+    printIpModeMenu();
+  } else {
+    printStaticIpMenu();
   }
 }
 
@@ -465,9 +548,10 @@ void SerialMenu::handlePrompt(const String& line) {
       } else if (choice >= 2 && choice <= _scanCount + 1) {
         String ssid = WiFi.SSID(choice - 2);
         ssid.toCharArray(cfg.wifi.ssid, sizeof(cfg.wifi.ssid));
+        _storage.save(cfg);
         Serial.print("SSID set to: ");
-        Serial.println(ssid);
-        Serial.println("Remember to Save Network Settings.");
+        Serial.print(ssid);
+        Serial.println(" (saved to flash)");
         WiFi.scanDelete();
         printNetworkMenu();
       } else {
@@ -479,64 +563,54 @@ void SerialMenu::handlePrompt(const String& line) {
     }
     case Prompt::WIFI_SSID: {
       line.toCharArray(cfg.wifi.ssid, sizeof(cfg.wifi.ssid));
-      Serial.println("SSID set. Remember to Save Network Settings.");
+      _storage.save(cfg);
+      Serial.println("SSID set and saved to flash.");
       printNetworkMenu();
       break;
     }
     case Prompt::WIFI_PASSWORD: {
       line.toCharArray(cfg.wifi.password, sizeof(cfg.wifi.password));
-      Serial.println("Password set. Remember to Save Network Settings.");
+      _storage.save(cfg);
+      Serial.println("Password set and saved to flash.");
       printNetworkMenu();
       break;
     }
-    case Prompt::WIFI_MODE_CHOICE: {
-      if (line == "1") {
-        cfg.wifi.useDhcp = true;
-        Serial.println("DHCP selected. Remember to Save Network Settings.");
-        printNetworkMenu();
-      } else if (line == "2") {
-        cfg.wifi.useDhcp = false;
-        Serial.print("Enter Static IP (a.b.c.d): ");
-        _prompt = Prompt::WIFI_STATIC_IP;
-      } else {
-        Serial.println("Invalid choice.");
-        printNetworkMenu();
-      }
-      break;
-    }
-    case Prompt::WIFI_STATIC_IP: {
+    case Prompt::STATIC_IP_VALUE: {
       IPAddress ip;
       if (ip.fromString(line)) {
         cfg.wifi.staticIp.fromIPAddress(ip);
-        Serial.print("Enter Gateway (a.b.c.d): ");
-        _prompt = Prompt::WIFI_GATEWAY;
+        _storage.save(cfg);
+        Serial.println("IP Address set and saved to flash.");
+        printStaticIpMenu();
       } else {
         Serial.print("Invalid IP, try again: ");
-        _prompt = Prompt::WIFI_STATIC_IP;
+        _prompt = Prompt::STATIC_IP_VALUE;
       }
       break;
     }
-    case Prompt::WIFI_GATEWAY: {
+    case Prompt::STATIC_GATEWAY_VALUE: {
       IPAddress ip;
       if (ip.fromString(line)) {
         cfg.wifi.gateway.fromIPAddress(ip);
-        Serial.print("Enter Subnet Mask (a.b.c.d): ");
-        _prompt = Prompt::WIFI_SUBNET;
+        _storage.save(cfg);
+        Serial.println("Gateway set and saved to flash.");
+        printStaticIpMenu();
       } else {
         Serial.print("Invalid IP, try again: ");
-        _prompt = Prompt::WIFI_GATEWAY;
+        _prompt = Prompt::STATIC_GATEWAY_VALUE;
       }
       break;
     }
-    case Prompt::WIFI_SUBNET: {
+    case Prompt::STATIC_SUBNET_VALUE: {
       IPAddress ip;
       if (ip.fromString(line)) {
         cfg.wifi.subnet.fromIPAddress(ip);
-        Serial.println("Static IP settings set. Remember to Save Network Settings.");
-        printNetworkMenu();
+        _storage.save(cfg);
+        Serial.println("Subnet Mask set and saved to flash.");
+        printStaticIpMenu();
       } else {
         Serial.print("Invalid IP, try again: ");
-        _prompt = Prompt::WIFI_SUBNET;
+        _prompt = Prompt::STATIC_SUBNET_VALUE;
       }
       break;
     }

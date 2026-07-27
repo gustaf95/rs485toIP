@@ -24,16 +24,15 @@ class SerialMenu {
   void poll();
 
  private:
-  enum class Screen { MAIN, NETWORK, RS485, ROUTING, COUNTERS, DEBUG };
+  enum class Screen { MAIN, NETWORK, IP_MODE, STATIC_IP, RS485, ROUTING, COUNTERS, DEBUG };
   enum class Prompt {
     NONE,
     WIFI_SSID,
     WIFI_SSID_CHOICE,
     WIFI_PASSWORD,
-    WIFI_MODE_CHOICE,
-    WIFI_STATIC_IP,
-    WIFI_GATEWAY,
-    WIFI_SUBNET,
+    STATIC_IP_VALUE,
+    STATIC_GATEWAY_VALUE,
+    STATIC_SUBNET_VALUE,
     RS485_BAUD_CHOICE,
     RS485_RX_PIN,
     RS485_TX_PIN,
@@ -65,6 +64,8 @@ class SerialMenu {
   void handleLine(const String& line);
   void handleMainMenu(const String& line);
   void handleNetworkMenu(const String& line);
+  void handleIpModeMenu(const String& line);
+  void handleStaticIpMenu(const String& line);
   void handleRs485Menu(const String& line);
   void handleRoutingMenu(const String& line);
   void handleCountersMenu(const String& line);
@@ -73,6 +74,8 @@ class SerialMenu {
 
   void printMainMenu();
   void printNetworkMenu();
+  void printIpModeMenu();
+  void printStaticIpMenu();
   void printRs485Menu();
   void printRoutingMenu();
   void printCountersMenu();

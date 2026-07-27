@@ -404,9 +404,11 @@ Select menu number:
   2. Set Wi-Fi Password
   3. Set DHCP / Static IP
   4. Retry Wi-Fi Connection
-  5. Save Network Settings
   0. Back to Main Menu
 ```
+
+Network Settings의 값(SSID, 비밀번호, DHCP/Static IP, Gateway, Subnet)은 별도의 저장 단계 없이
+변경 즉시 flash(NVS)에 기록된다.
 
 Wi-Fi 연결 실패 시 자동 AP 모드로 가지 않는다.  
 Serial 메뉴는 계속 사용 가능해야 하며, ESP32는 주기적으로 Wi-Fi 재접속을 시도한다.
@@ -424,6 +426,49 @@ Wi-Fi 연결 실패 시 출력:
 ```
 
 AP 모드는 본 요구사항의 핵심이 아니므로 구현하지 않아도 된다.
+
+### 12.1.1 Set DHCP / Static IP
+
+Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서브 메뉴.
+
+```text
+============================================================
+ 1.3 Set DHCP / Static IP
+============================================================
+
+  Current Mode     : DHCP
+
+------------------------------------------------------------
+ Options
+------------------------------------------------------------
+  1. Use DHCP
+  2. Configure Static IP
+  0. Back to Network Settings
+```
+
+"2. Configure Static IP"를 선택하면 현재 저장된 IP/Gateway/Subnet Mask 값을 보여주고,
+항목별로 개별 수정할 수 있는 서브 메뉴로 진입한다 (선택 시 useDhcp는 즉시 false로 전환되고 flash에 저장됨).
+
+```text
+============================================================
+ 1.3.2 Configure Static IP
+============================================================
+
+  IP Address       : 192.168.1.50
+  Gateway          : 192.168.1.1
+  Subnet Mask      : 255.255.255.0
+
+------------------------------------------------------------
+ Options
+------------------------------------------------------------
+  1. Set IP Address
+  2. Set Gateway
+  3. Set Subnet Mask
+  0. Back to DHCP / Static IP menu
+```
+
+각 항목은 값을 입력하는 즉시 flash에 저장되며, 입력 후에는 다시 이 메뉴로 돌아온다.
+별도의 저장 메뉴는 없다.
 
 ## 12.2 RS485 Settings
 
