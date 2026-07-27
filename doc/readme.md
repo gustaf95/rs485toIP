@@ -492,9 +492,11 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   2. Set RX Pin
   3. Set TX Pin
   4. Set DE/RE Pin
-  5. Save RS485 Settings
   0. Back to Main Menu
 ```
+
+Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART2에 재적용되며,
+별도의 저장 메뉴는 없다.
 
 Baudrate 선택값:
 
@@ -505,6 +507,15 @@ Baudrate 선택값:
 4. 38400
 5. 115200
 ```
+
+RX/TX/DE-RE 핀 입력 시 유효성 검사:
+
+- 아무 값도 입력하지 않고 Enter만 누르면 변경 없이 취소된다.
+- **GPIO1, 3** : UART0(USB Serial 메뉴 전용)이라 사용 불가
+- **GPIO6~11** : 보드 내장 SPI Flash 전용이라 사용 불가
+- **GPIO34~39** : 입력 전용이라 RX는 가능하지만 TX/DE-RE(출력 필요)로는 사용 불가
+- **GPIO0, 2, 5, 12, 15** (부팅 스트래핑 핀) : 사용은 가능하나 외부 배선에 따라 부팅에 영향을 줄 수 있어 설정 시 경고 메시지가 출력됨
+- 위 조건에 걸리면 에러 메시지와 함께 다시 입력받으며, 이때도 빈 입력으로 취소할 수 있다.
 
 ## 12.3 Routing Table
 
@@ -536,14 +547,36 @@ Baudrate 선택값:
 ------------------------------------------------------------
  Options
 ------------------------------------------------------------
+  1. Select Camera
+  0. Back to Main Menu
+```
+
+"1. Select Camera"를 선택하고 카메라 번호(1~7)를 입력하면 해당 카메라 전용 서브 메뉴로 진입한다.
+
+```text
+============================================================
+ 3.5 CAM5
+============================================================
+
+  VISCA Address    : 0x85
+  Camera IP        : 192.168.1.105
+  Port             : 5678
+  Protocol         : IP_VISCA_RAW_UDP
+  Address Mode     : rewrite_0x81
+
+------------------------------------------------------------
+ Options
+------------------------------------------------------------
   1. Set Camera IP
   2. Clear Camera IP
   3. Set Camera Port
   4. Set Protocol
   5. Set Address Mode
-  6. Save Routing Table
-  0. Back to Main Menu
+  0. Back to Routing Table
 ```
+
+각 항목은 값을 입력하는 즉시 flash에 저장되며, 별도의 저장 메뉴는 없다.
+"3. Set Camera Port" 입력 시 아무 값도 입력하지 않고 Enter만 누르면 변경 없이 취소된다.
 
 ## 12.4 Counters
 
@@ -571,7 +604,10 @@ Baudrate 선택값:
 ------------------------------------------------------------
   1. Reset Counters
   0. Back to Main Menu
+  (Press Enter with no input to refresh)
 ```
+
+아무 입력 없이 Enter만 누르면 화면이 최신 카운터 값으로 새로고침된다.
 
 카운터 의미:
 
@@ -607,6 +643,7 @@ Baudrate 선택값:
   1. Debug ON
   2. Debug OFF
   3. Show Last 20 Packets
+  4. Live Packet Monitor
   0. Back to Main Menu
 ```
 
@@ -615,6 +652,25 @@ Debug Mode ON일 때는 RS485 수신과 IP 전송을 실시간으로 출력한�
 5번 카메라 명령 예:
 
 ```text
+[RX] 85 01 06 04 FF
+[ROUTE] CAM5 -> 192.168.1.105:5678
+[REWRITE] 0x85 -> 0x81
+[TX] UDP 192.168.1.105:5678 | 81 01 06 04 FF
+```
+
+### 12.5.1 Live Packet Monitor
+
+"4. Live Packet Monitor"를 선택하면 Debug Mode가 꺼져 있어도 자동으로 켜지고(flash에 저장됨),
+아래와 같은 화면으로 전환되어 RS485 <-> IP VISCA 트래픽이 실시간으로 계속 출력된다.
+아무 입력 없이 Enter만 누르면 스트리밍이 멈추고 이전 메뉴(5. Debug Mode)로 돌아간다.
+
+```text
+============================================================
+ 5.4 Live Packet Monitor
+============================================================
+Streaming RS485 <-> IP VISCA traffic below.
+Press Enter (no input) to return to Debug Mode menu.
+------------------------------------------------------------
 [RX] 85 01 06 04 FF
 [ROUTE] CAM5 -> 192.168.1.105:5678
 [REWRITE] 0x85 -> 0x81

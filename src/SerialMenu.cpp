@@ -3,6 +3,38 @@
 
 namespace {
 const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
+const int kMaxGpio = 39;
+
+// GPIO1/3: UART0 (USB Serial 메뉴 전용), GPIO6~11: 내장 SPI Flash 전용 - 절대 사용 불가.
+bool isReservedGpio(uint8_t pin) {
+  return pin == 1 || pin == 3 || (pin >= 6 && pin <= 11);
+}
+
+// GPIO34~39: 입력 전용 - 출력(TX, DE/RE)으로는 사용 불가.
+bool isInputOnlyGpio(uint8_t pin) {
+  return pin >= 34 && pin <= 39;
+}
+
+// 부팅 모드를 결정하는 스트래핑 핀 - 사용은 가능하나 외부 배선에 따라 부팅에 영향을 줄 수 있어 경고만 표시.
+bool isStrappingGpio(uint8_t pin) {
+  return pin == 0 || pin == 2 || pin == 5 || pin == 12 || pin == 15;
+}
+
+bool validateRs485Pin(int pin, bool requireOutput, String* errorOut) {
+  if (pin < 0 || pin > kMaxGpio) {
+    *errorOut = "Invalid GPIO number (0-39).";
+    return false;
+  }
+  if (isReservedGpio((uint8_t)pin)) {
+    *errorOut = "GPIO" + String(pin) + " is reserved (UART0 console or internal SPI flash).";
+    return false;
+  }
+  if (requireOutput && isInputOnlyGpio((uint8_t)pin)) {
+    *errorOut = "GPIO" + String(pin) + " is input-only; cannot be used here.";
+    return false;
+  }
+  return true;
+}
 }  // namespace
 
 String SerialMenu::protocolName(ProtocolMode mode) {
@@ -57,8 +89,10 @@ void SerialMenu::handleLine(const String& line) {
     case Screen::STATIC_IP: handleStaticIpMenu(line); break;
     case Screen::RS485: handleRs485Menu(line); break;
     case Screen::ROUTING: handleRoutingMenu(line); break;
+    case Screen::CAMERA_DETAIL: handleCameraDetailMenu(line); break;
     case Screen::COUNTERS: handleCountersMenu(line); break;
     case Screen::DEBUG: handleDebugMenu(line); break;
+    case Screen::DEBUG_LIVE: handleDebugLiveMenu(line); break;
   }
 }
 
@@ -314,9 +348,13 @@ void SerialMenu::printRs485Menu() {
   Serial.println("  2. Set RX Pin");
   Serial.println("  3. Set TX Pin");
   Serial.println("  4. Set DE/RE Pin");
-  Serial.println("  5. Save RS485 Settings");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
+}
+
+void SerialMenu::applyRs485Settings(const SystemConfig& cfg) {
+  _storage.save(cfg);
+  _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin);
 }
 
 void SerialMenu::handleRs485Menu(const String& line) {
@@ -329,20 +367,14 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.print("> ");
     _prompt = Prompt::RS485_BAUD_CHOICE;
   } else if (line == "2") {
-    Serial.print("Enter RX Pin (GPIO number): ");
+    Serial.print("Enter RX Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_RX_PIN;
   } else if (line == "3") {
-    Serial.print("Enter TX Pin (GPIO number): ");
+    Serial.print("Enter TX Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_TX_PIN;
   } else if (line == "4") {
-    Serial.print("Enter DE/RE Pin (GPIO number): ");
+    Serial.print("Enter DE/RE Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_DERE_PIN;
-  } else if (line == "5") {
-    SystemConfig& cfg = _routing.get();
-    _storage.save(cfg);
-    _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin);
-    Serial.println("RS485 settings saved and applied.");
-    printRs485Menu();
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -388,12 +420,7 @@ void SerialMenu::printRoutingMenu() {
   Serial.println("------------------------------------------------------------");
   Serial.println(" Options");
   Serial.println("------------------------------------------------------------");
-  Serial.println("  1. Set Camera IP");
-  Serial.println("  2. Clear Camera IP");
-  Serial.println("  3. Set Camera Port");
-  Serial.println("  4. Set Protocol");
-  Serial.println("  5. Set Address Mode");
-  Serial.println("  6. Save Routing Table");
+  Serial.println("  1. Select Camera");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -401,28 +428,78 @@ void SerialMenu::printRoutingMenu() {
 void SerialMenu::handleRoutingMenu(const String& line) {
   if (line == "1") {
     Serial.print("Enter camera number (1-7): ");
-    _prompt = Prompt::ROUTING_SET_IP_CAM;
-  } else if (line == "2") {
-    Serial.print("Enter camera number (1-7): ");
-    _prompt = Prompt::ROUTING_CLEAR_IP_CAM;
-  } else if (line == "3") {
-    Serial.print("Enter camera number (1-7): ");
-    _prompt = Prompt::ROUTING_SET_PORT_CAM;
-  } else if (line == "4") {
-    Serial.print("Enter camera number (1-7): ");
-    _prompt = Prompt::ROUTING_SET_PROTOCOL_CAM;
-  } else if (line == "5") {
-    Serial.print("Enter camera number (1-7): ");
-    _prompt = Prompt::ROUTING_SET_ADDRMODE_CAM;
-  } else if (line == "6") {
-    _storage.save(_routing.get());
-    Serial.println("Routing table saved.");
-    printRoutingMenu();
+    _prompt = Prompt::ROUTING_SELECT_CAM;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
   } else {
     printRoutingMenu();
+  }
+}
+
+void SerialMenu::printCameraDetailMenu() {
+  CameraSlot* slot = _routing.camera(_pendingCamNumber);
+
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.print(" 3.");
+  Serial.print(_pendingCamNumber);
+  Serial.print(" CAM");
+  Serial.println(_pendingCamNumber);
+  Serial.println("============================================================");
+  Serial.println();
+  Serial.print("  VISCA Address    : 0x");
+  Serial.println(0x80 | _pendingCamNumber, HEX);
+  Serial.print("  Camera IP        : ");
+  Serial.println(slot->isConfigured() ? slot->ip.toIPAddress().toString() : "(not set)");
+  Serial.print("  Port             : ");
+  Serial.println(slot->port);
+  Serial.print("  Protocol         : ");
+  Serial.println(protocolName(slot->protocol));
+  Serial.print("  Address Mode     : ");
+  Serial.println(addressModeName(slot->addressMode));
+  Serial.println();
+  Serial.println("------------------------------------------------------------");
+  Serial.println(" Options");
+  Serial.println("------------------------------------------------------------");
+  Serial.println("  1. Set Camera IP");
+  Serial.println("  2. Clear Camera IP");
+  Serial.println("  3. Set Camera Port");
+  Serial.println("  4. Set Protocol");
+  Serial.println("  5. Set Address Mode");
+  Serial.println("  0. Back to Routing Table");
+  Serial.print("> ");
+}
+
+void SerialMenu::handleCameraDetailMenu(const String& line) {
+  if (line == "1") {
+    Serial.print("Enter Camera IP (a.b.c.d): ");
+    _prompt = Prompt::ROUTING_SET_IP_VALUE;
+  } else if (line == "2") {
+    _routing.camera(_pendingCamNumber)->ip.fromIPAddress(IPAddress(0, 0, 0, 0));
+    _storage.save(_routing.get());
+    Serial.println("Camera IP cleared and saved to flash.");
+    printCameraDetailMenu();
+  } else if (line == "3") {
+    Serial.print("Enter Camera Port (blank to cancel): ");
+    _prompt = Prompt::ROUTING_SET_PORT_VALUE;
+  } else if (line == "4") {
+    Serial.println("1. IP_VISCA_RAW_UDP");
+    Serial.println("2. IP_VISCA_RAW_TCP");
+    Serial.println("3. SONY_VISCA_UDP");
+    Serial.print("> ");
+    _prompt = Prompt::ROUTING_SET_PROTOCOL_VALUE;
+  } else if (line == "5") {
+    Serial.println("1. rewrite_0x81");
+    Serial.println("2. preserve");
+    Serial.println("3. rewrite_by_cam");
+    Serial.print("> ");
+    _prompt = Prompt::ROUTING_SET_ADDRMODE_VALUE;
+  } else if (line == "0") {
+    _screen = Screen::ROUTING;
+    printRoutingMenu();
+  } else {
+    printCameraDetailMenu();
   }
 }
 
@@ -455,6 +532,7 @@ void SerialMenu::printCountersMenu() {
   Serial.println("------------------------------------------------------------");
   Serial.println("  1. Reset Counters");
   Serial.println("  0. Back to Main Menu");
+  Serial.println("  (Press Enter with no input to refresh)");
   Serial.print("> ");
 }
 
@@ -492,6 +570,7 @@ void SerialMenu::printDebugMenu() {
   Serial.println("  1. Debug ON");
   Serial.println("  2. Debug OFF");
   Serial.println("  3. Show Last 20 Packets");
+  Serial.println("  4. Live Packet Monitor");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -517,11 +596,40 @@ void SerialMenu::handleDebugMenu(const String& line) {
       Serial.println(entry);
     }
     printDebugMenu();
+  } else if (line == "4") {
+    _screen = Screen::DEBUG_LIVE;
+    printDebugLiveMenu();
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
   } else {
     printDebugMenu();
+  }
+}
+
+void SerialMenu::printDebugLiveMenu() {
+  SystemConfig& cfg = _routing.get();
+  if (!cfg.debugMode) {
+    cfg.debugMode = true;
+    _storage.save(cfg);
+  }
+
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println(" 5.4 Live Packet Monitor");
+  Serial.println("============================================================");
+  Serial.println("Streaming RS485 <-> IP VISCA traffic below.");
+  Serial.println("Press Enter (no input) to return to Debug Mode menu.");
+  Serial.println("------------------------------------------------------------");
+}
+
+void SerialMenu::handleDebugLiveMenu(const String& line) {
+  if (line.length() == 0) {
+    Serial.println("------------------------------------------------------------");
+    _screen = Screen::DEBUG;
+    printDebugMenu();
+  } else {
+    Serial.println("(still monitoring - press Enter with no input to return)");
   }
 }
 
@@ -618,7 +726,8 @@ void SerialMenu::handlePrompt(const String& line) {
       int choice = line.toInt();
       if (choice >= 1 && choice <= 5) {
         cfg.rs485Baudrate = kBaudChoices[choice - 1];
-        Serial.println("Baudrate set. Remember to Save RS485 Settings.");
+        applyRs485Settings(cfg);
+        Serial.println("Baudrate set and saved to flash.");
       } else {
         Serial.println("Invalid choice.");
       }
@@ -626,29 +735,80 @@ void SerialMenu::handlePrompt(const String& line) {
       break;
     }
     case Prompt::RS485_RX_PIN: {
-      cfg.rs485RxPin = (uint8_t)line.toInt();
-      Serial.println("RX pin set. Remember to Save RS485 Settings.");
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+        printRs485Menu();
+        break;
+      }
+      int pin = line.toInt();
+      String error;
+      if (!validateRs485Pin(pin, /*requireOutput=*/false, &error)) {
+        Serial.print(error);
+        Serial.print(" Try again (blank to cancel): ");
+        _prompt = Prompt::RS485_RX_PIN;
+        break;
+      }
+      cfg.rs485RxPin = (uint8_t)pin;
+      applyRs485Settings(cfg);
+      if (isStrappingGpio((uint8_t)pin)) {
+        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
+      }
+      Serial.println("RX pin set and saved to flash.");
       printRs485Menu();
       break;
     }
     case Prompt::RS485_TX_PIN: {
-      cfg.rs485TxPin = (uint8_t)line.toInt();
-      Serial.println("TX pin set. Remember to Save RS485 Settings.");
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+        printRs485Menu();
+        break;
+      }
+      int pin = line.toInt();
+      String error;
+      if (!validateRs485Pin(pin, /*requireOutput=*/true, &error)) {
+        Serial.print(error);
+        Serial.print(" Try again (blank to cancel): ");
+        _prompt = Prompt::RS485_TX_PIN;
+        break;
+      }
+      cfg.rs485TxPin = (uint8_t)pin;
+      applyRs485Settings(cfg);
+      if (isStrappingGpio((uint8_t)pin)) {
+        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
+      }
+      Serial.println("TX pin set and saved to flash.");
       printRs485Menu();
       break;
     }
     case Prompt::RS485_DERE_PIN: {
-      cfg.rs485DeRePin = (uint8_t)line.toInt();
-      Serial.println("DE/RE pin set. Remember to Save RS485 Settings.");
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+        printRs485Menu();
+        break;
+      }
+      int pin = line.toInt();
+      String error;
+      if (!validateRs485Pin(pin, /*requireOutput=*/true, &error)) {
+        Serial.print(error);
+        Serial.print(" Try again (blank to cancel): ");
+        _prompt = Prompt::RS485_DERE_PIN;
+        break;
+      }
+      cfg.rs485DeRePin = (uint8_t)pin;
+      applyRs485Settings(cfg);
+      if (isStrappingGpio((uint8_t)pin)) {
+        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
+      }
+      Serial.println("DE/RE pin set and saved to flash.");
       printRs485Menu();
       break;
     }
-    case Prompt::ROUTING_SET_IP_CAM: {
+    case Prompt::ROUTING_SELECT_CAM: {
       int cam = line.toInt();
       if (cam >= 1 && cam <= CAMERA_SLOT_COUNT) {
         _pendingCamNumber = (uint8_t)cam;
-        Serial.print("Enter Camera IP (a.b.c.d): ");
-        _prompt = Prompt::ROUTING_SET_IP_VALUE;
+        _screen = Screen::CAMERA_DETAIL;
+        printCameraDetailMenu();
       } else {
         Serial.println("Invalid camera number.");
         printRoutingMenu();
@@ -659,60 +819,30 @@ void SerialMenu::handlePrompt(const String& line) {
       IPAddress ip;
       if (ip.fromString(line)) {
         _routing.camera(_pendingCamNumber)->ip.fromIPAddress(ip);
-        Serial.println("Camera IP set. Remember to Save Routing Table.");
-        printRoutingMenu();
+        _storage.save(cfg);
+        Serial.println("Camera IP set and saved to flash.");
+        printCameraDetailMenu();
       } else {
         Serial.print("Invalid IP, try again: ");
         _prompt = Prompt::ROUTING_SET_IP_VALUE;
       }
       break;
     }
-    case Prompt::ROUTING_CLEAR_IP_CAM: {
-      int cam = line.toInt();
-      if (cam >= 1 && cam <= CAMERA_SLOT_COUNT) {
-        _routing.camera(cam)->ip.fromIPAddress(IPAddress(0, 0, 0, 0));
-        Serial.println("Camera IP cleared. Remember to Save Routing Table.");
-      } else {
-        Serial.println("Invalid camera number.");
-      }
-      printRoutingMenu();
-      break;
-    }
-    case Prompt::ROUTING_SET_PORT_CAM: {
-      int cam = line.toInt();
-      if (cam >= 1 && cam <= CAMERA_SLOT_COUNT) {
-        _pendingCamNumber = (uint8_t)cam;
-        Serial.print("Enter Camera Port: ");
-        _prompt = Prompt::ROUTING_SET_PORT_VALUE;
-      } else {
-        Serial.println("Invalid camera number.");
-        printRoutingMenu();
-      }
-      break;
-    }
     case Prompt::ROUTING_SET_PORT_VALUE: {
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+        printCameraDetailMenu();
+        break;
+      }
       int port = line.toInt();
       if (port > 0 && port <= 65535) {
         _routing.camera(_pendingCamNumber)->port = (uint16_t)port;
-        Serial.println("Camera port set. Remember to Save Routing Table.");
+        _storage.save(cfg);
+        Serial.println("Camera port set and saved to flash.");
+        printCameraDetailMenu();
       } else {
-        Serial.println("Invalid port.");
-      }
-      printRoutingMenu();
-      break;
-    }
-    case Prompt::ROUTING_SET_PROTOCOL_CAM: {
-      int cam = line.toInt();
-      if (cam >= 1 && cam <= CAMERA_SLOT_COUNT) {
-        _pendingCamNumber = (uint8_t)cam;
-        Serial.println("1. IP_VISCA_RAW_UDP");
-        Serial.println("2. IP_VISCA_RAW_TCP");
-        Serial.println("3. SONY_VISCA_UDP");
-        Serial.print("> ");
-        _prompt = Prompt::ROUTING_SET_PROTOCOL_VALUE;
-      } else {
-        Serial.println("Invalid camera number.");
-        printRoutingMenu();
+        Serial.print("Invalid port, try again (blank to cancel): ");
+        _prompt = Prompt::ROUTING_SET_PORT_VALUE;
       }
       break;
     }
@@ -720,25 +850,12 @@ void SerialMenu::handlePrompt(const String& line) {
       int choice = line.toInt();
       if (choice >= 1 && choice <= 3) {
         _routing.camera(_pendingCamNumber)->protocol = (ProtocolMode)(choice - 1);
-        Serial.println("Protocol set. Remember to Save Routing Table.");
+        _storage.save(cfg);
+        Serial.println("Protocol set and saved to flash.");
+        printCameraDetailMenu();
       } else {
         Serial.println("Invalid choice.");
-      }
-      printRoutingMenu();
-      break;
-    }
-    case Prompt::ROUTING_SET_ADDRMODE_CAM: {
-      int cam = line.toInt();
-      if (cam >= 1 && cam <= CAMERA_SLOT_COUNT) {
-        _pendingCamNumber = (uint8_t)cam;
-        Serial.println("1. rewrite_0x81");
-        Serial.println("2. preserve");
-        Serial.println("3. rewrite_by_cam");
-        Serial.print("> ");
-        _prompt = Prompt::ROUTING_SET_ADDRMODE_VALUE;
-      } else {
-        Serial.println("Invalid camera number.");
-        printRoutingMenu();
+        printCameraDetailMenu();
       }
       break;
     }
@@ -746,11 +863,13 @@ void SerialMenu::handlePrompt(const String& line) {
       int choice = line.toInt();
       if (choice >= 1 && choice <= 3) {
         _routing.camera(_pendingCamNumber)->addressMode = (AddressMode)(choice - 1);
-        Serial.println("Address mode set. Remember to Save Routing Table.");
+        _storage.save(cfg);
+        Serial.println("Address mode set and saved to flash.");
+        printCameraDetailMenu();
       } else {
         Serial.println("Invalid choice.");
+        printCameraDetailMenu();
       }
-      printRoutingMenu();
       break;
     }
     case Prompt::NONE:

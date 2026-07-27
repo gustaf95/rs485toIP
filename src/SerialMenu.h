@@ -24,7 +24,18 @@ class SerialMenu {
   void poll();
 
  private:
-  enum class Screen { MAIN, NETWORK, IP_MODE, STATIC_IP, RS485, ROUTING, COUNTERS, DEBUG };
+  enum class Screen {
+    MAIN,
+    NETWORK,
+    IP_MODE,
+    STATIC_IP,
+    RS485,
+    ROUTING,
+    CAMERA_DETAIL,
+    COUNTERS,
+    DEBUG,
+    DEBUG_LIVE
+  };
   enum class Prompt {
     NONE,
     WIFI_SSID,
@@ -37,14 +48,10 @@ class SerialMenu {
     RS485_RX_PIN,
     RS485_TX_PIN,
     RS485_DERE_PIN,
-    ROUTING_SET_IP_CAM,
+    ROUTING_SELECT_CAM,
     ROUTING_SET_IP_VALUE,
-    ROUTING_CLEAR_IP_CAM,
-    ROUTING_SET_PORT_CAM,
     ROUTING_SET_PORT_VALUE,
-    ROUTING_SET_PROTOCOL_CAM,
     ROUTING_SET_PROTOCOL_VALUE,
-    ROUTING_SET_ADDRMODE_CAM,
     ROUTING_SET_ADDRMODE_VALUE
   };
 
@@ -68,9 +75,14 @@ class SerialMenu {
   void handleStaticIpMenu(const String& line);
   void handleRs485Menu(const String& line);
   void handleRoutingMenu(const String& line);
+  void handleCameraDetailMenu(const String& line);
   void handleCountersMenu(const String& line);
   void handleDebugMenu(const String& line);
+  void handleDebugLiveMenu(const String& line);
   void handlePrompt(const String& line);
+
+  // RS485 설정(Baudrate/RX/TX/DE-RE Pin) 변경 시 flash에 저장하고 즉시 UART를 재적용한다.
+  void applyRs485Settings(const SystemConfig& cfg);
 
   void printMainMenu();
   void printNetworkMenu();
@@ -78,8 +90,10 @@ class SerialMenu {
   void printStaticIpMenu();
   void printRs485Menu();
   void printRoutingMenu();
+  void printCameraDetailMenu();
   void printCountersMenu();
   void printDebugMenu();
+  void printDebugLiveMenu();
 
   static String protocolName(ProtocolMode mode);
   static String addressModeName(AddressMode mode);
