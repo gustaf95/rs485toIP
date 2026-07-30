@@ -5,7 +5,7 @@ namespace {
 const char* kNamespace = "visca-gw";
 const char* kBlobKey = "config";
 constexpr uint32_t kConfigMagic = 0x56494736;  // "VIG6" (bumped for the camera-slot layout)
-constexpr uint16_t kConfigVersion = 2;
+constexpr uint16_t kConfigVersion = 3;  // bumped: debugMode 필드 제거로 SystemConfig 레이아웃 변경
 }  // namespace
 
 bool Storage::load(SystemConfig& config) {

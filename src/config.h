@@ -2,10 +2,11 @@
 
 #include <Arduino.h>
 
-// ---- RS485 / UART2 ----
-#define RS485_RX_PIN_DEFAULT 16
-#define RS485_TX_PIN_DEFAULT 17
-#define RS485_DE_RE_PIN_DEFAULT 4
+// ---- RS485 / UART0 (Serial, USB 콘솔과 공유) ----
+// 이 하드웨어 리비전은 RS485가 RX0/TX0/GPIO17에 고정 결선되어 있어 변경 불가.
+#define RS485_RX_PIN_DEFAULT 3   // RX0
+#define RS485_TX_PIN_DEFAULT 1   // TX0
+#define RS485_DE_RE_PIN_DEFAULT 17
 #define RS485_BAUD_DEFAULT 9600
 
 // ---- Status LED ----

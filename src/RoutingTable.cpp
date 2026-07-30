@@ -14,7 +14,6 @@ void RoutingTable::applyDefaults() {
   _config.rs485DeRePin = RS485_DE_RE_PIN_DEFAULT;
 
   _config.responseMode = ResponseMode::NONE;
-  _config.debugMode = false;
 
   for (uint8_t i = 0; i < CAMERA_SLOT_COUNT; i++) {
     CameraSlot& slot = _config.cameras[i];

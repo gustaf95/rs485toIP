@@ -3,42 +3,6 @@
 
 namespace {
 const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
-const int kMaxGpio = 39;
-
-// GPIO1/3: UART0 (USB Serial 메뉴 전용), GPIO6~11: 내장 SPI Flash 전용 - 절대 사용 불가.
-bool isReservedGpio(uint8_t pin) {
-  return pin == 1 || pin == 3 || (pin >= 6 && pin <= 11);
-}
-
-// GPIO34~39: 입력 전용 - 출력(TX, DE/RE)으로는 사용 불가.
-bool isInputOnlyGpio(uint8_t pin) {
-  return pin >= 34 && pin <= 39;
-}
-
-// 부팅 모드를 결정하는 스트래핑 핀 - 사용은 가능하나 외부 배선에 따라 부팅에 영향을 줄 수 있어 경고만 표시.
-bool isStrappingGpio(uint8_t pin) {
-  return pin == 0 || pin == 2 || pin == 5 || pin == 12 || pin == 15;
-}
-
-bool validateRs485Pin(int pin, bool requireOutput, String* errorOut) {
-  if (pin < 0 || pin > kMaxGpio) {
-    *errorOut = "Invalid GPIO number (0-39).";
-    return false;
-  }
-  if (pin == STATUS_LED_PIN) {
-    *errorOut = "GPIO" + String(pin) + " is reserved for the status LED.";
-    return false;
-  }
-  if (isReservedGpio((uint8_t)pin)) {
-    *errorOut = "GPIO" + String(pin) + " is reserved (UART0 console or internal SPI flash).";
-    return false;
-  }
-  if (requireOutput && isInputOnlyGpio((uint8_t)pin)) {
-    *errorOut = "GPIO" + String(pin) + " is input-only; cannot be used here.";
-    return false;
-  }
-  return true;
-}
 }  // namespace
 
 String SerialMenu::protocolName(ProtocolMode mode) {
@@ -60,28 +24,34 @@ String SerialMenu::addressModeName(AddressMode mode) {
 }
 
 void SerialMenu::begin() {
-  printMainMenu();
+  // 여기서는 아무것도 출력하지 않는다 - Serial0를 RS485와 공유하므로, 사용자가
+  // 실제로 콘솔을 보고 있다는 신호(Enter 1회)를 받기 전까지는 조용히 있는다.
 }
 
-void SerialMenu::poll() {
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    if (c == '\r') continue;
+void SerialMenu::feedByte(char c) {
+  if (!_started) {
     if (c == '\n') {
-      Serial.println();
-      String line = _lineBuffer;
-      line.trim();
-      _lineBuffer = "";
-      handleLine(line);
-    } else if (c == 0x08 || c == 0x7F) {  // Backspace(BS) 또는 Delete(DEL)
-      if (_lineBuffer.length() > 0) {
-        _lineBuffer.remove(_lineBuffer.length() - 1);
-        Serial.print("\b \b");  // 커서를 뒤로, 문자를 공백으로 지우고, 다시 뒤로
-      }
-    } else {
-      Serial.write(c);
-      _lineBuffer += c;
+      _started = true;
+      printMainMenu();
     }
+    return;  // 활성화 전에는 에코도, 버퍼 적재도 하지 않는다.
+  }
+
+  if (c == '\r') return;
+  if (c == '\n') {
+    Serial.println();
+    String line = _lineBuffer;
+    line.trim();
+    _lineBuffer = "";
+    handleLine(line);
+  } else if (c == 0x08 || c == 0x7F) {  // Backspace(BS) 또는 Delete(DEL)
+    if (_lineBuffer.length() > 0) {
+      _lineBuffer.remove(_lineBuffer.length() - 1);
+      Serial.print("\b \b");  // 커서를 뒤로, 문자를 공백으로 지우고, 다시 뒤로
+    }
+  } else {
+    Serial.write(c);
+    _lineBuffer += c;
   }
 }
 
@@ -100,8 +70,6 @@ void SerialMenu::handleLine(const String& line) {
     case Screen::ROUTING: handleRoutingMenu(line); break;
     case Screen::CAMERA_DETAIL: handleCameraDetailMenu(line); break;
     case Screen::COUNTERS: handleCountersMenu(line); break;
-    case Screen::DEBUG: handleDebugMenu(line); break;
-    case Screen::DEBUG_LIVE: handleDebugLiveMenu(line); break;
   }
 }
 
@@ -110,7 +78,6 @@ void SerialMenu::handleLine(const String& line) {
 // ---------------------------------------------------------------------------
 
 void SerialMenu::printMainMenu() {
-  SystemConfig& cfg = _routing.get();
   bool connected = WiFi.status() == WL_CONNECTED;
 
   Serial.println();
@@ -125,8 +92,6 @@ void SerialMenu::printMainMenu() {
   Serial.println(connected ? "Connected" : "Disconnected");
   Serial.print("  ESP32 IP         : ");
   Serial.println(connected ? WiFi.localIP().toString() : "Not assigned");
-  Serial.print("  Debug Mode       : ");
-  Serial.println(cfg.debugMode ? "ON" : "OFF");
   Serial.println();
   Serial.println("------------------------------------------------------------");
   Serial.println(" Main Menu");
@@ -135,7 +100,6 @@ void SerialMenu::printMainMenu() {
   Serial.println("  2. RS485 Settings");
   Serial.println("  3. Routing Table");
   Serial.println("  4. Counters");
-  Serial.println("  5. Debug Mode");
   Serial.println();
   Serial.println("============================================================");
   Serial.print("Select menu number: ");
@@ -154,9 +118,6 @@ void SerialMenu::handleMainMenu(const String& line) {
   } else if (line == "4") {
     _screen = Screen::COUNTERS;
     printCountersMenu();
-  } else if (line == "5") {
-    _screen = Screen::DEBUG;
-    printDebugMenu();
   } else {
     printMainMenu();
   }
@@ -338,25 +299,29 @@ void SerialMenu::printRs485Menu() {
   Serial.println(" 2. RS485 Settings");
   Serial.println("============================================================");
   Serial.println();
-  Serial.println("  UART Port        : UART2 / Serial2");
+  Serial.println("  UART Port        : UART0 / Serial (shared with USB console)");
   Serial.print("  RX Pin           : GPIO");
-  Serial.println(cfg.rs485RxPin);
+  Serial.print(cfg.rs485RxPin);
+  Serial.println(" (RX0, fixed)");
   Serial.print("  TX Pin           : GPIO");
-  Serial.println(cfg.rs485TxPin);
+  Serial.print(cfg.rs485TxPin);
+  Serial.println(" (TX0, fixed)");
   Serial.print("  DE/RE Pin        : GPIO");
-  Serial.println(cfg.rs485DeRePin);
+  Serial.print(cfg.rs485DeRePin);
+  Serial.println(" (fixed)");
   Serial.print("  Baudrate         : ");
   Serial.println(cfg.rs485Baudrate);
   Serial.println("  Format           : 8N1");
   Serial.println("  Default Mode     : Receive");
   Serial.println();
+  Serial.println("  Note: this board wires RS485 to RX0/TX0, so the USB console shares");
+  Serial.println("  the same UART. Typing here while RS485 traffic is flowing may show");
+  Serial.println("  garbled lines; changing Baudrate also changes the console's baud.");
+  Serial.println();
   Serial.println("------------------------------------------------------------");
   Serial.println(" Options");
   Serial.println("------------------------------------------------------------");
   Serial.println("  1. Set Baudrate");
-  Serial.println("  2. Set RX Pin");
-  Serial.println("  3. Set TX Pin");
-  Serial.println("  4. Set DE/RE Pin");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -375,15 +340,6 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.println("5. 115200");
     Serial.print("> ");
     _prompt = Prompt::RS485_BAUD_CHOICE;
-  } else if (line == "2") {
-    Serial.print("Enter RX Pin (GPIO number, blank to cancel): ");
-    _prompt = Prompt::RS485_RX_PIN;
-  } else if (line == "3") {
-    Serial.print("Enter TX Pin (GPIO number, blank to cancel): ");
-    _prompt = Prompt::RS485_TX_PIN;
-  } else if (line == "4") {
-    Serial.print("Enter DE/RE Pin (GPIO number, blank to cancel): ");
-    _prompt = Prompt::RS485_DERE_PIN;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -540,6 +496,7 @@ void SerialMenu::printCountersMenu() {
   Serial.println(" Options");
   Serial.println("------------------------------------------------------------");
   Serial.println("  1. Reset Counters");
+  Serial.println("  2. Show Last 20 Packets");
   Serial.println("  0. Back to Main Menu");
   Serial.println("  (Press Enter with no input to refresh)");
   Serial.print("> ");
@@ -550,95 +507,19 @@ void SerialMenu::handleCountersMenu(const String& line) {
     _diagnostics.resetCounters();
     Serial.println("Counters reset.");
     printCountersMenu();
-  } else if (line == "0") {
-    _screen = Screen::MAIN;
-    printMainMenu();
-  } else {
-    printCountersMenu();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Debug Mode
-// ---------------------------------------------------------------------------
-
-void SerialMenu::printDebugMenu() {
-  SystemConfig& cfg = _routing.get();
-
-  Serial.println();
-  Serial.println("============================================================");
-  Serial.println(" 5. Debug Mode");
-  Serial.println("============================================================");
-  Serial.println();
-  Serial.print("  Current Debug Mode : ");
-  Serial.println(cfg.debugMode ? "ON" : "OFF");
-  Serial.println();
-  Serial.println("------------------------------------------------------------");
-  Serial.println(" Options");
-  Serial.println("------------------------------------------------------------");
-  Serial.println("  1. Debug ON");
-  Serial.println("  2. Debug OFF");
-  Serial.println("  3. Show Last 20 Packets");
-  Serial.println("  4. Live Packet Monitor");
-  Serial.println("  0. Back to Main Menu");
-  Serial.print("> ");
-}
-
-void SerialMenu::handleDebugMenu(const String& line) {
-  SystemConfig& cfg = _routing.get();
-
-  if (line == "1") {
-    cfg.debugMode = true;
-    _storage.save(cfg);
-    Serial.println("Debug mode ON.");
-    printDebugMenu();
   } else if (line == "2") {
-    cfg.debugMode = false;
-    _storage.save(cfg);
-    Serial.println("Debug mode OFF.");
-    printDebugMenu();
-  } else if (line == "3") {
     Serial.println("---- Last packets (most recent first) ----");
     for (uint8_t i = 0; i < _diagnostics.recentLogDepth(); i++) {
       const String& entry = _diagnostics.recentLog()[i];
       if (entry.length() == 0) continue;
       Serial.println(entry);
     }
-    printDebugMenu();
-  } else if (line == "4") {
-    _screen = Screen::DEBUG_LIVE;
-    printDebugLiveMenu();
+    printCountersMenu();
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
   } else {
-    printDebugMenu();
-  }
-}
-
-void SerialMenu::printDebugLiveMenu() {
-  SystemConfig& cfg = _routing.get();
-  if (!cfg.debugMode) {
-    cfg.debugMode = true;
-    _storage.save(cfg);
-  }
-
-  Serial.println();
-  Serial.println("============================================================");
-  Serial.println(" 5.4 Live Packet Monitor");
-  Serial.println("============================================================");
-  Serial.println("Streaming RS485 <-> IP VISCA traffic below.");
-  Serial.println("Press Enter (no input) to return to Debug Mode menu.");
-  Serial.println("------------------------------------------------------------");
-}
-
-void SerialMenu::handleDebugLiveMenu(const String& line) {
-  if (line.length() == 0) {
-    Serial.println("------------------------------------------------------------");
-    _screen = Screen::DEBUG;
-    printDebugMenu();
-  } else {
-    Serial.println("(still monitoring - press Enter with no input to return)");
+    printCountersMenu();
   }
 }
 
@@ -740,75 +621,6 @@ void SerialMenu::handlePrompt(const String& line) {
       } else {
         Serial.println("Invalid choice.");
       }
-      printRs485Menu();
-      break;
-    }
-    case Prompt::RS485_RX_PIN: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printRs485Menu();
-        break;
-      }
-      int pin = line.toInt();
-      String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/false, &error)) {
-        Serial.print(error);
-        Serial.print(" Try again (blank to cancel): ");
-        _prompt = Prompt::RS485_RX_PIN;
-        break;
-      }
-      cfg.rs485RxPin = (uint8_t)pin;
-      applyRs485Settings(cfg);
-      if (isStrappingGpio((uint8_t)pin)) {
-        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
-      }
-      Serial.println("RX pin set and saved to flash.");
-      printRs485Menu();
-      break;
-    }
-    case Prompt::RS485_TX_PIN: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printRs485Menu();
-        break;
-      }
-      int pin = line.toInt();
-      String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/true, &error)) {
-        Serial.print(error);
-        Serial.print(" Try again (blank to cancel): ");
-        _prompt = Prompt::RS485_TX_PIN;
-        break;
-      }
-      cfg.rs485TxPin = (uint8_t)pin;
-      applyRs485Settings(cfg);
-      if (isStrappingGpio((uint8_t)pin)) {
-        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
-      }
-      Serial.println("TX pin set and saved to flash.");
-      printRs485Menu();
-      break;
-    }
-    case Prompt::RS485_DERE_PIN: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printRs485Menu();
-        break;
-      }
-      int pin = line.toInt();
-      String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/true, &error)) {
-        Serial.print(error);
-        Serial.print(" Try again (blank to cancel): ");
-        _prompt = Prompt::RS485_DERE_PIN;
-        break;
-      }
-      cfg.rs485DeRePin = (uint8_t)pin;
-      applyRs485Settings(cfg);
-      if (isStrappingGpio((uint8_t)pin)) {
-        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
-      }
-      Serial.println("DE/RE pin set and saved to flash.");
       printRs485Menu();
       break;
     }

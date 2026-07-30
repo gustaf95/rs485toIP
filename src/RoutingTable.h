@@ -75,7 +75,6 @@ struct SystemConfig {
   uint8_t rs485DeRePin;
 
   ResponseMode responseMode;
-  bool debugMode;
 
   CameraSlot cameras[CAMERA_SLOT_COUNT];  // index 0 = CAM1 ... index 6 = CAM7
 };

@@ -47,20 +47,23 @@ FoMaKo 매뉴얼 기준 확인된 제어 정보는 다음과 같다.
 
 ## 3. 하드웨어 구성
 
+> **이 브랜치(OneSerial)는 다른 회로 리비전을 대상으로 한다.** RS485가 UART0(RX0/TX0)에
+> 고정 결선되어 있어, USB 시리얼 콘솔(메뉴/디버그)과 RS485가 **물리적으로 같은 UART 한
+> 포트를 공유**한다. UART0와 UART2를 분리해서 쓰던 이전 리비전과는 배선/동작 방식이 다르다.
+
 ## 3.1 ESP32 UART 사용
 
-| 용도                   | ESP32 인터페이스 | 권장 핀                    | 설명                              |
-| ---------------------- | ---------------- | -------------------------- | --------------------------------- |
-| USB Serial 디버그/설정 | UART0 / Serial   | TX0, RX0                   | PC와 연결, 메뉴 출력 및 설정 입력 |
-| RS485 VISCA 수신/송신  | UART2 / Serial2  | RX2 = GPIO16, TX2 = GPIO17 | RS485 모듈 연결                   |
-| RS485 방향 제어        | GPIO             | GPIO4                      | DE, /RE 제어                      |
+| 용도                              | ESP32 인터페이스 | 핀                 | 설명                                          |
+| --------------------------------- | ---------------- | ------------------ | --------------------------------------------- |
+| USB Serial 콘솔(메뉴/디버그) + RS485 VISCA 수신/송신 | UART0 / Serial | RX0 = GPIO3, TX0 = GPIO1 | 이 보드에서 RS485가 고정 결선되어 있음. USB 콘솔과 완전히 같은 UART를 공유한다 |
+| RS485 방향 제어                   | GPIO             | GPIO17              | DE, /RE 제어                                  |
 
 중요 사항:
 
-- UART0는 USB Serial 전용으로 사용한다.
-- RS485는 UART2에 연결한다.
-- RS485를 TX0/RX0에 연결하지 않는다.
-- TX0/RX0를 RS485와 공유하면 업로드, 디버그, RS485 통신이 충돌할 수 있다.
+- 이 리비전은 RS485가 RX0/TX0에 고정 결선되어 있어 Serial 메뉴에서 RX/TX/DE-RE 핀을 바꿀 수 없다 (Baudrate만 변경 가능).
+- USB 콘솔과 RS485가 같은 UART이므로, RS485 실제 트래픽이 흐르는 도중 USB 터미널에 타이핑하면 메뉴 줄 파싱과 뒤섞여 이상한 출력이 보일 수 있다. 다만 타이핑 에코백은 DE/RE가 LOW(수신 모드)인 상태에서 나가므로 RS485 버스 자체에는 실리지 않는다.
+- VISCA 패킷의 파라미터 바이트(팬/틸트/줌 위치 등)는 주소 바이트/터미네이터와 겹치지 않도록 니블 단위(`0x00`~`0x0F`)로 인코딩되는 경우가 많아, Enter(`0x0A`)나 Backspace(`0x08`)와 우연히 같은 값이 자주 나올 수 있다. 이를 줄이기 위해 [main.cpp](../src/main.cpp)의 `loop()`는, 진행 중인 바이트열이 **유효한 VISCA 주소 바이트(`0x81`~`0x88`)로 시작한 경우에만** 터미네이터(`0xFF`) 전까지 그 바이트를 메뉴 쪽으로 넘기지 않는다. 단순히 "아무 바이트나 들어왔으면 막기"로 하면, PTZ 컨트롤러가 아직 연결되지 않아 RS485 라인이 떠서 노이즈가 계속 들어오는 상황에서 메뉴가 영영 반응하지 않게 되므로, 반드시 주소 바이트 여부까지 확인한다. 완벽한 차단은 아니지만 대부분의 오인식을 걸러낸다.
+- Baudrate를 바꾸면 RS485뿐 아니라 USB 터미널에서 메뉴를 보기 위한 baudrate도 함께 바뀐다 (같은 UART이므로 터미널 프로그램의 속도도 맞춰 바꿔야 한다).
 
 ## 3.2 RS485 모듈
 
@@ -83,10 +86,10 @@ ESP32는 3.3V TTL 로직이므로 RS485 모듈도 3.3V TTL 호환 제품을 사�
 | ------------- | ------------------------ |
 | VCC           | 3V3                      |
 | GND           | GND                      |
-| RO            | GPIO16 / RX2             |
-| DI            | GPIO17 / TX2             |
-| DE            | GPIO4                    |
-| /RE           | GPIO4                    |
+| RO            | GPIO3 / RX0              |
+| DI            | GPIO1 / TX0              |
+| DE            | GPIO17                   |
+| /RE           | GPIO17                   |
 | A 또는 +      | PTZ 컨트롤러 RS485 A / + |
 | B 또는 -      | PTZ 컨트롤러 RS485 B / - |
 
@@ -353,22 +356,27 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | Gateway               | Gateway                  | 없음                                           |
 | Subnet Mask           | Subnet                   | 없음                                           |
 | RS485 Baudrate        | RS485 속도               | 9600                                           |
-| RS485 RX Pin          | UART2 RX                 | GPIO16                                         |
-| RS485 TX Pin          | UART2 TX                 | GPIO17                                         |
-| RS485 DE/RE Pin       | 방향 제어 핀             | GPIO4                                          |
+| RS485 RX Pin          | RX0 (UART0, 고정)        | GPIO3                                          |
+| RS485 TX Pin          | TX0 (UART0, 고정)        | GPIO1                                          |
+| RS485 DE/RE Pin       | 방향 제어 핀 (고정)      | GPIO17                                         |
 | Camera 1 IP           | CAM1 IP                  | empty                                          |
 | Camera 1 Port         | CAM1 Port                | 5678                                           |
 | Camera 1 Protocol     | CAM1 Protocol            | IP_VISCA_RAW_UDP                               |
 | Camera 1 Address Mode | CAM1 Address Mode        | rewrite_0x81                                   |
 | Camera 2~7 설정       | 위와 동일                | empty / 5678 / IP_VISCA_RAW_UDP / rewrite_0x81 |
 | Response Mode         | 응답 처리 모드           | none                                           |
-| Debug Mode            | 디버그 출력 여부         | off                                            |
 
 ---
 
 ## 11. Serial 시작 메뉴
 
-전원 투입 후 USB Serial에 다음과 같은 메뉴를 출력한다.
+> **(OneSerial 브랜치)** 이 UART0를 RS485와 공유하므로, 전원 투입 직후에는 아무것도
+> 출력하지 않는다. Wi-Fi 연결 시도 등 초기화는 평소대로 진행되지만 관련 로그도
+> 찍지 않는다. 사용자가 USB 터미널에서 **Enter를 한 번 입력**해야 그 시점의 상태로
+> 아래 Main Menu가 나타나며, 그 이후부터는 평소처럼 상호작용할 수 있다. 이는 RS485
+> 트래픽이 흐르는 동안 콘솔 출력이 함께 실리는 걸 최소화하기 위함이다.
+
+전원 투입 후 사용자가 Enter를 한 번 입력하면 USB Serial에 다음과 같은 메뉴를 출력한다.
 
 ```text
 ============================================================
@@ -380,7 +388,6 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
   Mode             : Gateway Running
   Wi-Fi            : Connected / Disconnected
   ESP32 IP         : 192.168.1.50 또는 Not assigned
-  Debug Mode       : OFF
 
 ------------------------------------------------------------
  Main Menu
@@ -389,7 +396,6 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
   2. RS485 Settings
   3. Routing Table
   4. Counters
-  5. Debug Mode
 
 Select menu number:
 ============================================================
@@ -496,26 +502,29 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
  2. RS485 Settings
 ============================================================
 
-  UART Port        : UART2 / Serial2
-  RX Pin           : GPIO16
-  TX Pin           : GPIO17
-  DE/RE Pin        : GPIO4
+  UART Port        : UART0 / Serial (shared with USB console)
+  RX Pin           : GPIO3 (RX0, fixed)
+  TX Pin           : GPIO1 (TX0, fixed)
+  DE/RE Pin        : GPIO17 (fixed)
   Baudrate         : 9600
   Format           : 8N1
   Default Mode     : Receive
+
+  Note: this board wires RS485 to RX0/TX0, so the USB console shares
+  the same UART. Typing here while RS485 traffic is flowing may show
+  garbled lines; changing Baudrate also changes the console's baud.
 
 ------------------------------------------------------------
  Options
 ------------------------------------------------------------
   1. Set Baudrate
-  2. Set RX Pin
-  3. Set TX Pin
-  4. Set DE/RE Pin
   0. Back to Main Menu
 ```
 
-Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART2에 재적용되며,
-별도의 저장 메뉴는 없다.
+이 하드웨어 리비전은 RS485가 RX0/TX0/GPIO17에 고정 결선되어 있어 RX/TX/DE-RE 핀은 메뉴에서
+바꿀 수 없다 (이전 리비전에 있던 핀 유효성 검사·Set RX/TX/DE-RE Pin 메뉴는 이 브랜치에서 제거됨).
+Baudrate만 변경 가능하며, 값을 입력하는 즉시 flash에 저장되고 UART0에 재적용된다 (별도의 저장 메뉴 없음).
+Baudrate를 바꾸면 USB 터미널 쪽 속도도 함께 바뀌므로, 터미널 프로그램의 baudrate도 맞춰 변경해야 한다.
 
 Baudrate 선택값:
 
@@ -526,15 +535,6 @@ Baudrate 선택값:
 4. 38400
 5. 115200
 ```
-
-RX/TX/DE-RE 핀 입력 시 유효성 검사:
-
-- 아무 값도 입력하지 않고 Enter만 누르면 변경 없이 취소된다.
-- **GPIO1, 3** : UART0(USB Serial 메뉴 전용)이라 사용 불가
-- **GPIO6~11** : 보드 내장 SPI Flash 전용이라 사용 불가
-- **GPIO34~39** : 입력 전용이라 RX는 가능하지만 TX/DE-RE(출력 필요)로는 사용 불가
-- **GPIO0, 2, 5, 12, 15** (부팅 스트래핑 핀) : 사용은 가능하나 외부 배선에 따라 부팅에 영향을 줄 수 있어 설정 시 경고 메시지가 출력됨
-- 위 조건에 걸리면 에러 메시지와 함께 다시 입력받으며, 이때도 빈 입력으로 취소할 수 있다.
 
 ## 12.3 Routing Table
 
@@ -622,11 +622,15 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
  Options
 ------------------------------------------------------------
   1. Reset Counters
+  2. Show Last 20 Packets
   0. Back to Main Menu
   (Press Enter with no input to refresh)
 ```
 
 아무 입력 없이 Enter만 누르면 화면이 최신 카운터 값으로 새로고침된다.
+
+"2. Show Last 20 Packets"는 최근 수신/전달/무시된 패킷 로그(최신순)를 보여준다. 이 로그는
+Debug Mode 여부와 무관하게 항상 기록되므로 언제든 확인할 수 있다.
 
 카운터 의미:
 
@@ -646,81 +650,6 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
 | Wi-Fi Reconnect     | Wi-Fi 재접속 횟수                             |
 
 주의: Broadcast 하나가 여러 카메라로 전송될 수 있으므로 `Broadcast RX`와 `Broadcast Forwarded`는 다를 수 있다.
-
-## 12.5 Debug Mode
-
-```text
-============================================================
- 5. Debug Mode
-============================================================
-
-  Current Debug Mode : OFF
-
-------------------------------------------------------------
- Options
-------------------------------------------------------------
-  1. Debug ON
-  2. Debug OFF
-  3. Show Last 20 Packets
-  4. Live Packet Monitor
-  0. Back to Main Menu
-```
-
-Debug Mode ON일 때는 RS485 수신과 IP 전송을 실시간으로 출력한다.
-
-5번 카메라 명령 예:
-
-```text
-[RX] 85 01 06 04 FF
-[ROUTE] CAM5 -> 192.168.1.105:5678
-[REWRITE] 0x85 -> 0x81
-[TX] UDP 192.168.1.105:5678 | 81 01 06 04 FF
-```
-
-### 12.5.1 Live Packet Monitor
-
-"4. Live Packet Monitor"를 선택하면 Debug Mode가 꺼져 있어도 자동으로 켜지고(flash에 저장됨),
-아래와 같은 화면으로 전환되어 RS485 <-> IP VISCA 트래픽이 실시간으로 계속 출력된다.
-아무 입력 없이 Enter만 누르면 스트리밍이 멈추고 이전 메뉴(5. Debug Mode)로 돌아간다.
-
-```text
-============================================================
- 5.4 Live Packet Monitor
-============================================================
-Streaming RS485 <-> IP VISCA traffic below.
-Press Enter (no input) to return to Debug Mode menu.
-------------------------------------------------------------
-[RX] 85 01 06 04 FF
-[ROUTE] CAM5 -> 192.168.1.105:5678
-[REWRITE] 0x85 -> 0x81
-[TX] UDP 192.168.1.105:5678 | 81 01 06 04 FF
-```
-
-IP가 없는 카메라 명령 예:
-
-```text
-[RX] 82 01 06 04 FF
-[ROUTE] CAM2 -> No IP configured
-[ACTION] Ignored
-```
-
-Broadcast 명령 예:
-
-```text
-[RX] 88 01 00 01 FF
-[ROUTE] Broadcast -> all configured cameras
-[TX] UDP 192.168.1.102:5678 | 81 01 00 01 FF
-[TX] UDP 192.168.1.105:5678 | 81 01 00 01 FF
-[TX] UDP 192.168.1.107:5678 | 81 01 00 01 FF
-```
-
-오류 패킷 예:
-
-```text
-[RX] 12 34 FF
-[ERROR] Malformed packet
-[ACTION] Dropped
-```
 
 ---
 
@@ -785,9 +714,9 @@ Broadcast 명령 예:
 
 핵심 요구사항:
 
-1. UART0는 USB Serial 메뉴와 디버그 전용으로 사용한다.
-2. UART2를 사용하여 RS485 VISCA 패킷을 수신한다.
-3. RS485 방향 제어 핀은 기본 GPIO4로 한다.
+1. (OneSerial 브랜치) UART0를 RS485(RX0/TX0)와 USB Serial 메뉴/디버그가 공유한다.
+2. UART0(Serial)를 사용하여 RS485 VISCA 패킷을 수신한다.
+3. RS485 방향 제어 핀은 기본 GPIO17로 한다 (이 리비전에서 고정 결선, 메뉴로 변경 불가).
 4. RS485 기본 모드는 Receive이다.
 5. VISCA 패킷은 `0xFF`를 기준으로 구분한다.
 6. 패킷 첫 바이트 `0x81~0x87`을 카메라 1~7로 해석한다.
@@ -804,16 +733,20 @@ Broadcast 명령 예:
 17. 웹 설정 UI는 구현하지 않는다.
 18. ONVIF는 구현하지 않는다.
 19. Pelco-D/P 변환은 구현하지 않는다.
-20. Debug Mode에서는 RS485 수신과 IP 전송을 실시간으로 출력한다.
+20. (OneSerial 브랜치) Debug Mode 설정은 제거되었다 - UART0를 RS485와 공유하는 구조상 원본
+    바이트가 콘솔에 항상 에코되므로 별도 ON/OFF 토글이 불필요하다. 대신 Counters 메뉴의
+    "Show Last 20 Packets"로 최근 패킷 로그를 확인한다.
 21. 설정은 Preferences/NVS에 저장하고 재부팅 후 복원한다.
-22. Serial 시작 메뉴는 다음 5개 항목만 사용한다.
+22. (OneSerial 브랜치) 부팅 직후에는 아무 것도 출력하지 않는다. 사용자가 콘솔에서
+    Enter를 한 번 입력해야 그 시점부터 메뉴가 활성화되어 출력을 시작한다 (Serial0를
+    RS485와 공유하므로 불필요한 출력을 최소화하기 위함).
+23. Serial 시작 메뉴는 다음 4개 항목만 사용한다.
 
 ```text
 1. Network Settings
 2. RS485 Settings
 3. Routing Table
 4. Counters
-5. Debug Mode
 ```
 
 가능하면 메뉴 처리는 non-blocking에 가깝게 구현한다. Serial 메뉴가 표시되어 있어도 RS485 패킷 수신과 IP 전송이 중단되지 않아야 한다.

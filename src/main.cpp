@@ -29,15 +29,6 @@ unsigned long lastWifiRetryMs = 0;
 bool wasWifiConnected = false;
 const unsigned long kWifiRetryIntervalMs = 5000;
 
-const char* protocolTag(ProtocolMode mode) {
-  switch (mode) {
-    case ProtocolMode::IP_VISCA_RAW_UDP: return "UDP";
-    case ProtocolMode::IP_VISCA_RAW_TCP: return "TCP";
-    case ProtocolMode::SONY_VISCA_UDP: return "SONY_UDP";
-  }
-  return "?";
-}
-
 // Wi-Fi 연결을 시도한다. 실패해도 자동 AP 모드로 전환하지 않는다 - Serial 메뉴는
 // 계속 사용 가능하며, maintainWifi()가 주기적으로 재접속을 시도한다.
 void connectWifi() {
@@ -49,7 +40,9 @@ void connectWifi() {
   WiFi.mode(WIFI_STA);
 
   if (strlen(cfg.wifi.ssid) == 0) {
-    Serial.println("No Wi-Fi SSID configured. Use Serial menu (Network Settings) to set one.");
+    if (serialMenu.isActive()) {
+      Serial.println("No Wi-Fi SSID configured. Use Serial menu (Network Settings) to set one.");
+    }
     return;
   }
 
@@ -58,23 +51,28 @@ void connectWifi() {
                 cfg.wifi.subnet.toIPAddress());
   }
 
-  Serial.print("WiFi connecting to ");
-  Serial.print(cfg.wifi.ssid);
+  if (serialMenu.isActive()) {
+    Serial.print("WiFi connecting to ");
+    Serial.print(cfg.wifi.ssid);
+  }
   WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
   wifiIsStation = true;
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < WIFI_CONNECT_TIMEOUT_MS) {
     delay(250);
-    Serial.print(".");
+    if (serialMenu.isActive()) Serial.print(".");
   }
-  Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
     wasWifiConnected = true;
-    Serial.print("WiFi connected: ");
-    Serial.println(WiFi.localIP());
-  } else {
+    if (serialMenu.isActive()) {
+      Serial.println();
+      Serial.print("WiFi connected: ");
+      Serial.println(WiFi.localIP());
+    }
+  } else if (serialMenu.isActive()) {
+    Serial.println();
     Serial.println("WiFi connect failed. Will retry periodically; Serial menu remains available.");
   }
 }
@@ -92,7 +90,7 @@ void maintainWifi() {
   }
 
   if (wasWifiConnected) {
-    Serial.println("WiFi disconnected, will retry");
+    if (serialMenu.isActive()) Serial.println("WiFi disconnected, will retry");
     wasWifiConnected = false;
   }
 
@@ -104,8 +102,10 @@ void maintainWifi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     diagnostics.recordWifiReconnect();
-    Serial.print("WiFi reconnected: ");
-    Serial.println(WiFi.localIP());
+    if (serialMenu.isActive()) {
+      Serial.print("WiFi reconnected: ");
+      Serial.println(WiFi.localIP());
+    }
   }
 }
 
@@ -147,11 +147,6 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485Rx(data, len);
   statusLed.notifyRs485Signal();
 
-  if (cfg.debugMode) {
-    Serial.print("[RX] ");
-    Serial.println(viscaBytesToHex(data, len));
-  }
-
   uint8_t addressByte = data[0];
   bool isBroadcast = (addressByte == VISCA_ADDR_BROADCAST);
   bool validStart =
@@ -159,10 +154,6 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
 
   if (!validStart) {
     diagnostics.recordMalformed();
-    if (cfg.debugMode) {
-      Serial.println("[ERROR] Malformed packet");
-      Serial.println("[ACTION] Dropped");
-    }
     return;
   }
 
@@ -179,20 +170,8 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
   uint8_t count = routingTable.route(data, len, results, CAMERA_SLOT_COUNT);
 
   if (count == 0) {
-    if (isBroadcast) {
-      if (cfg.debugMode) {
-        Serial.println("[ROUTE] Broadcast -> no cameras configured");
-        Serial.println("[ACTION] Ignored");
-      }
-    } else {
+    if (!isBroadcast) {
       diagnostics.recordIgnoredNoIp(data, len);
-      if (cfg.debugMode) {
-        uint8_t camNumber = addressByte - VISCA_ADDR_CAM1 + 1;
-        Serial.print("[ROUTE] CAM");
-        Serial.print(camNumber);
-        Serial.println(" -> No IP configured");
-        Serial.println("[ACTION] Ignored");
-      }
     }
     return;
   }
@@ -203,25 +182,6 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
     IPAddress ip = slot.ip.toIPAddress();
     String target = ip.toString() + ":" + String(slot.port);
 
-    if (cfg.debugMode) {
-      Serial.print("[ROUTE] ");
-      if (isBroadcast) {
-        Serial.print("Broadcast -> CAM");
-        Serial.println(camNumber);
-      } else {
-        Serial.print("CAM");
-        Serial.print(camNumber);
-        Serial.print(" -> ");
-        Serial.println(target);
-      }
-      if (results[i].output[0] != data[0]) {
-        Serial.print("[REWRITE] 0x");
-        Serial.print(data[0], HEX);
-        Serial.print(" -> 0x");
-        Serial.println(results[i].output[0], HEX);
-      }
-    }
-
     bool ok = sendToCamera(slot, results[i].output, results[i].outputLen);
 
     if (!isBroadcast) {
@@ -230,14 +190,6 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
 
     if (ok) {
       diagnostics.recordIpTxSuccess();
-      if (cfg.debugMode) {
-        Serial.print("[TX] ");
-        Serial.print(protocolTag(slot.protocol));
-        Serial.print(" ");
-        Serial.print(target);
-        Serial.print(" | ");
-        Serial.println(viscaBytesToHex(results[i].output, results[i].outputLen));
-      }
 
       if (cfg.responseMode == ResponseMode::SYNTHETIC) {
         sendSyntheticResponse(camNumber);
@@ -245,10 +197,6 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
       // FORWARD / FORWARD_REWRITE 응답은 loop()의 pollCameraResponses()에서 비동기로 처리한다.
     } else {
       diagnostics.recordIpTxFailed();
-      if (cfg.debugMode) {
-        Serial.print("[ERROR] IP TX Failed -> ");
-        Serial.println(target);
-      }
     }
   }
 
@@ -282,23 +230,11 @@ void pollCameraResponses() {
 
     rs485.writePacket(buf, len);
     diagnostics.recordRs485TxResponse();
-
-    if (cfg.debugMode) {
-      Serial.print("Forwarded camera response from ");
-      Serial.print(remoteIp);
-      Serial.print(": ");
-      Serial.println(viscaBytesToHex(buf, len));
-    }
     return;
   }
 }
 
 void setup() {
-  Serial.begin(9600);  // UART0: USB Serial 메뉴/디버그 전용
-  delay(200);
-  Serial.println();
-  Serial.println("ESP32 RS485 VISCA to IP VISCA Gateway starting...");
-
   routingTable.applyDefaults();
   if (!storage.load(routingTable.get())) {
     storage.save(routingTable.get());
@@ -306,8 +242,13 @@ void setup() {
   diagnostics.begin();
   statusLed.begin(STATUS_LED_PIN);
 
+  // RS485가 RX0/TX0(UART0)에 고정 결선되어 USB 콘솔과 Serial을 공유하므로,
+  // rs485.begin()이 이 baudrate로 Serial을 시작한다 - 별도의 Serial.begin() 없음.
+  // 부팅 시에는 아무 메시지도 찍지 않는다 - 사용자가 콘솔에서 Enter를 한 번
+  // 입력하기 전까지 serialMenu가 비활성 상태를 유지하며 조용히 있는다.
   SystemConfig& cfg = routingTable.get();
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin);
+  delay(200);
 
   connectWifi();
 
@@ -315,17 +256,31 @@ void setup() {
   sonyViscaClient.begin();
 
   serialMenu.begin();
-
-  Serial.println("Setup complete");
 }
 
 void loop() {
-  serialMenu.poll();
   maintainWifi();
   statusLed.update(WiFi.status() == WL_CONNECTED);
 
+  // RS485(UART0)가 USB 콘솔과 같은 Serial을 공유하므로, 들어온 바이트 하나를
+  // 메뉴 파서와 VISCA 파서 양쪽에 동시에 넘긴다. 메뉴 쪽이 먼저 다 읽어가 버리면
+  // VISCA 파서가 아무 바이트도 못 보게 되므로 반드시 이렇게 한 곳에서만 읽어야 한다.
   while (rs485.available()) {
     uint8_t b = rs485.read();
+
+    // 유효한 VISCA 주소 바이트(0x81~0x88)로 시작한 패킷이 아직 진행 중일 때만
+    // 메뉴 쪽으로 바이트를 넘기지 않는다 - 페이로드 바이트가 우연히
+    // Enter(0x0A)/Backspace(0x08, 0x7F)와 같은 값이라서 메뉴가 오작동하는 걸
+    // 막기 위함이다. length()>0이라는 이유만으로 막으면, PTZ 컨트롤러가 없어
+    // RS485 라인이 떠 있어 노이즈가 계속 들어올 때 메뉴가 영영 반응하지 않게
+    // 되므로, 반드시 첫 바이트가 실제 VISCA 주소인지까지 확인해야 한다.
+    bool viscaPacketInProgress = viscaParser.length() > 0 &&
+                                  viscaParser.buffer()[0] >= VISCA_ADDR_CAM1 &&
+                                  viscaParser.buffer()[0] <= VISCA_ADDR_BROADCAST;
+    if (!viscaPacketInProgress) {
+      serialMenu.feedByte((char)b);
+    }
+
     ViscaParseResult result = viscaParser.feed(b);
 
     switch (result) {

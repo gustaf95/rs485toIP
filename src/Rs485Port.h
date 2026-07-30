@@ -1,11 +1,12 @@
 #pragma once
 
 #include <Arduino.h>
-#include <HardwareSerial.h>
 #include "config.h"
 
-// UART2 기반 RS485 송수신 및 DE/RE 방향 제어를 담당한다.
-// TX0/RX0(UART0, USB Serial)는 절대 사용하지 않는다.
+// 이 하드웨어 리비전은 RS485가 RX0/TX0(UART0)에 고정 결선되어 있어, USB 시리얼
+// 콘솔(메뉴/디버그)과 물리적으로 같은 UART(Serial)를 공유한다. 별도의 UART2
+// 포트를 쓰지 않으며, 실제로 콘솔에 타이핑하는 동안 RS485 트래픽이 들어오면
+// 서로의 파싱 로직에 섞여 보일 수 있다.
 class Rs485Port {
  public:
   void begin(uint32_t baudrate, uint8_t rxPin, uint8_t txPin, uint8_t deRePin);
@@ -17,6 +18,5 @@ class Rs485Port {
   void writePacket(const uint8_t* data, uint8_t len);
 
  private:
-  HardwareSerial _serial{2};
   uint8_t _deRePin = RS485_DE_RE_PIN_DEFAULT;
 };
