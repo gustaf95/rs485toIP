@@ -25,6 +25,10 @@ bool validateRs485Pin(int pin, bool requireOutput, String* errorOut) {
     *errorOut = "Invalid GPIO number (0-39).";
     return false;
   }
+  if (pin == STATUS_LED_PIN) {
+    *errorOut = "GPIO" + String(pin) + " is reserved for the status LED.";
+    return false;
+  }
   if (isReservedGpio((uint8_t)pin)) {
     *errorOut = "GPIO" + String(pin) + " is reserved (UART0 console or internal SPI flash).";
     return false;
@@ -69,6 +73,11 @@ void SerialMenu::poll() {
       line.trim();
       _lineBuffer = "";
       handleLine(line);
+    } else if (c == 0x08 || c == 0x7F) {  // Backspace(BS) 또는 Delete(DEL)
+      if (_lineBuffer.length() > 0) {
+        _lineBuffer.remove(_lineBuffer.length() - 1);
+        Serial.print("\b \b");  // 커서를 뒤로, 문자를 공백으로 지우고, 다시 뒤로
+      }
     } else {
       Serial.write(c);
       _lineBuffer += c;

@@ -106,6 +106,25 @@ DE = LOW
 
 ESP32는 평소에는 RS485 명령을 들어야 하므로 Receive 상태를 유지한다. 카메라 응답 또는 synthetic 응답을 RS485 컨트롤러로 되돌려 보낼 때만 잠깐 Transmit 상태로 전환하고, 전송 완료 후 즉시 Receive 상태로 복귀한다.
 
+## 3.4 상태 LED
+
+| 항목      | 값                          |
+| --------- | --------------------------- |
+| GPIO      | GPIO2                       |
+| 용도      | Wi-Fi 연결 상태 / RS485 신호 수신 표시 |
+
+동작 방식 (`StatusLed` 클래스, [StatusLed.h](src/StatusLed.h) / [StatusLed.cpp](src/StatusLed.cpp)):
+
+| 상황                     | LED 동작                                  |
+| ------------------------ | ------------------------------------------ |
+| Wi-Fi 연결됨             | 항상 켜짐(고정 ON)                         |
+| Wi-Fi 연결 안 됨         | 1초 간격으로 깜박임                        |
+| RS485 VISCA 패킷 수신    | 0.2초 간격으로 2회 깜박인 뒤 위 상태로 복귀 |
+
+RS485 패킷 수신 표시가 Wi-Fi 상태 표시보다 우선하며, 2회 깜박임이 끝나면 그 시점의 Wi-Fi 연결 여부에 따라 원래 패턴(고정 ON 또는 1초 깜박임)으로 자동 복귀한다. `delay()`를 쓰지 않는 `millis()` 기반 non-blocking 상태 머신이라 RS485 수신/IP 전송을 막지 않는다.
+
+GPIO2는 상태 LED 전용으로 예약되어 있어, Serial 메뉴의 RS485 RX/TX/DE-RE Pin 설정에서 GPIO2를 입력하면 "reserved for the status LED" 오류로 거부된다.
+
 ---
 
 ## 4. VISCA 주소와 라우팅 기본 개념

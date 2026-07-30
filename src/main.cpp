@@ -10,6 +10,7 @@
 #include "IpViscaClient.h"
 #include "SonyViscaClient.h"
 #include "SerialMenu.h"
+#include "StatusLed.h"
 
 void connectWifi();
 
@@ -21,6 +22,7 @@ ViscaParser viscaParser;
 IpViscaClient ipViscaClient;
 SonyViscaClient sonyViscaClient;
 SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, connectWifi);
+StatusLed statusLed;
 
 bool wifiIsStation = false;
 unsigned long lastWifiRetryMs = 0;
@@ -143,6 +145,7 @@ bool sendToCamera(const CameraSlot& slot, const uint8_t* data, uint8_t len) {
 void handleViscaPacket(const uint8_t* data, uint8_t len) {
   SystemConfig& cfg = routingTable.get();
   diagnostics.recordRs485Rx(data, len);
+  statusLed.notifyRs485Signal();
 
   if (cfg.debugMode) {
     Serial.print("[RX] ");
@@ -301,6 +304,7 @@ void setup() {
     storage.save(routingTable.get());
   }
   diagnostics.begin();
+  statusLed.begin(STATUS_LED_PIN);
 
   SystemConfig& cfg = routingTable.get();
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin);
@@ -318,6 +322,7 @@ void setup() {
 void loop() {
   serialMenu.poll();
   maintainWifi();
+  statusLed.update(WiFi.status() == WL_CONNECTED);
 
   while (rs485.available()) {
     uint8_t b = rs485.read();
