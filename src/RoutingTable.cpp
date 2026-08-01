@@ -8,6 +8,13 @@ void RoutingTable::applyDefaults() {
   _config.wifi.password[0] = '\0';
   _config.wifi.useDhcp = true;
 
+  // apSsid는 일부러 비워둔다 - WebConfigServer::begin()이 MAC 기반 기본값을 한 번
+  // 만들어서 여기에 채워 넣는다(RoutingTable.h 주석 참고). apPassword는 MAC 같은
+  // 런타임 의존성이 없어서 지금 바로 고정 기본값을 채워도 된다.
+  _config.wifi.apSsid[0] = '\0';
+  strncpy(_config.wifi.apPassword, AP_PASSWORD_DEFAULT, sizeof(_config.wifi.apPassword) - 1);
+  _config.wifi.apPassword[sizeof(_config.wifi.apPassword) - 1] = '\0';
+
   _config.rs485Baudrate = RS485_BAUD_DEFAULT;
   _config.rs485RxPin = RS485_RX_PIN_DEFAULT;
   _config.rs485TxPin = RS485_TX_PIN_DEFAULT;

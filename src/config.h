@@ -55,6 +55,9 @@
 
 // ---- Diagnostics ----
 #define DIAG_LOG_DEPTH 20
+// Raw byte 로그는 파싱된 RX/TX 로그(DIAG_LOG_DEPTH)와 별도 링버퍼를 쓴다 - 그렇지
+// 않으면 raw 트래픽이 잦을 때 유의미한 패킷 로그가 금방 밀려난다.
+#define DIAG_RAW_LOG_DEPTH 20
 
 // ---- Raw Byte Monitor ----
 // Live Packet Monitor와 달리 프로토콜 파싱/체크섬 결과와 무관하게 RS485로 들어오는
@@ -73,3 +76,14 @@
 // 버퍼가 이 크기에 도달하면 gap을 기다리지 않고 즉시 전송한다 (VISCA_BUFFER_SIZE와
 // 동일하게 맞춰 이 프로젝트의 다른 버퍼들과 일관성을 유지한다).
 #define RAW_BRIDGE_BUFFER_SIZE VISCA_BUFFER_SIZE
+
+// ---- Web Config Server (AP+STA) ----
+// USB Serial에 물리적으로 접근할 수 없는 환경(이미 설치된 장비, UART0가 RS485와
+// 충돌하는 보드 등)을 위한 두 번째 설정 인터페이스. STA(평소 WiFi)와 무관하게
+// AP를 항상 띄워서 접근 경로를 보장한다. SSID는 실행 중에 AP_SSID_PREFIX +
+// MAC 주소 뒷자리로 조립되어 기기별로 겹치지 않는다 (WebConfigServer::begin() 참고).
+// 비밀번호는 고정 기본값 - "웹 페이지 자체엔 로그인이 없다"는 것과는 별개로,
+// AP WiFi 접속 자체를 아무나 못 잡게 막는 최소한의 방어선이다.
+#define AP_SSID_PREFIX "RS485Gateway-"
+#define AP_PASSWORD_DEFAULT "00000001"
+#define WEB_SERVER_PORT 80

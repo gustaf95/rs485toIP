@@ -368,17 +368,21 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 
 ## 11. Serial 시작 메뉴
 
-전원 투입/리셋 직후에는 메뉴가 자동으로 뜨지 않는다 — 게이트웨이는 메뉴 조작 없이도
-RS485↔IP 변환을 계속 수행하므로, 콘솔을 보고 있지 않을 때 메뉴가 끼어들지 않게 하기
-위함이다. 대신 아래 안내만 한 번 출력된다.
+전원 투입/리셋 직후에는 메뉴가 자동으로 뜨지 않을 뿐 아니라, **Serial에 어떤 메시지도
+찍히지 않는다** — 부팅 배너, Wi-Fi STA 연결 시도/성공/실패 메시지, 재접속 메시지까지
+전부 메뉴가 잠금 해제되기 전까지는 완전히 침묵한다. 게이트웨이는 메뉴 조작 없이도
+RS485↔IP 변환을 계속 수행하므로, 아무도 콘솔을 보고 있지 않을 때(무인 설치 환경 등)
+어떤 텍스트도 끼어들지 않게 하기 위함이다. 안내 메시지조차 출력하지 않으므로, "Enter를
+두 번 누르면 메뉴가 열린다"는 사실은 이 문서로만 알 수 있다.
 
-```text
-USB Serial menu idle - press Enter twice (blank line) to open the Main Menu.
-```
+아무것도 입력하지 않고 **Enter를 연속 두 번** 누르면 그때 Main Menu가 열리고, 그 순간부터
+이후의 Serial 출력(Wi-Fi 상태 메시지 등)도 정상적으로 찍히기 시작한다. 중간에 뭔가 입력하고
+Enter를 치면 카운트가 리셋된다(로그성 노이즈 등으로 우연히 열리는 걸 방지). 한 번 열리면
+이후에는 평소처럼 번호를 입력해 메뉴를 탐색하면 되고, 다시 잠그려면 리셋해야 한다.
 
-아무것도 입력하지 않고 **Enter를 연속 두 번** 누르면 그때 Main Menu가 열린다. 중간에 뭔가
-입력하고 Enter를 치면 카운트가 리셋된다(로그성 노이즈 등으로 우연히 열리는 걸 방지). 한 번
-열리면 이후에는 평소처럼 번호를 입력해 메뉴를 탐색하면 되고, 다시 잠그려면 리셋해야 한다.
+주의: Debug Mode에서 나오는 RX/TX 로그(`[RX]`, `[TX]` 등)는 이 잠금과 무관하다 — Debug
+Mode는 Serial이든 Web이든 사용자가 명시적으로 켠 기능이라, 메뉴가 잠겨 있어도 Debug Mode가
+ON이면 정상적으로 출력된다.
 
 메뉴가 열리면 다음과 같이 출력된다.
 
@@ -437,11 +441,13 @@ Menu로 돌아간다. 확인되면 RS485 UART를 새 기본값으로 즉시 재�
  1. Network Settings
 ============================================================
 
-  Wi-Fi Mode       : STA
+  Wi-Fi Mode       : AP+STA
   Wi-Fi Status     : Connected
   SSID             : Your_AP_Name
   DHCP             : Enabled
   ESP32 IP         : 192.168.1.50
+  AP SSID          : RS485Gateway-3F2A
+  AP IP            : 192.168.4.1
   Gateway          : 192.168.1.1
   Subnet           : 255.255.255.0
 
@@ -452,16 +458,29 @@ Menu로 돌아간다. 확인되면 RS485 UART를 새 기본값으로 즉시 재�
   2. Set Wi-Fi Password
   3. Set DHCP / Static IP
   4. Retry Wi-Fi Connection
+  5. Set AP SSID
+  6. Set AP Password
   0. Back to Main Menu
 ```
 
-Network Settings의 값(SSID, 비밀번호, DHCP/Static IP, Gateway, Subnet)은 별도의 저장 단계 없이
-변경 즉시 flash(NVS)에 기록된다.
+Network Settings의 값(SSID, 비밀번호, DHCP/Static IP, Gateway, Subnet, AP SSID/Password)은
+별도의 저장 단계 없이 변경 즉시 flash(NVS)에 기록된다.
 
-Wi-Fi 연결 실패 시 자동 AP 모드로 가지 않는다.  
-Serial 메뉴는 계속 사용 가능해야 하며, ESP32는 주기적으로 Wi-Fi 재접속을 시도한다.
+Wi-Fi STA 연결 실패 시에도 Serial 메뉴는 계속 사용 가능하고, ESP32는 주기적으로 STA 재접속을
+시도한다. **AP는 STA 연결 여부와 무관하게 항상 켜져 있다** — `WiFi.mode(WIFI_AP_STA)`로
+STA/AP를 동시에 운용한다(13절 "Web Config Server" 참고). USB Serial에 물리적으로 접근할
+수 없는 환경(이미 설치된 장비, UART0가 RS485와 충돌하는 보드)에서도 접근 경로를 보장하기
+위함이다.
 
-Wi-Fi 연결 실패 시 출력:
+AP SSID/Password는 **"5. Set AP SSID"/"6. Set AP Password"로 직접 바꿀 수 있다** — 저장 즉시
+`WiFi.softAP()`를 재적용해서 재부팅 없이 반영된다. 처음 값(아직 한 번도 안 바꿨을 때)은
+`RS485Gateway-XXXX`(뒤 4자리는 MAC 주소 기반, 기기별로 다름) 형태로 최초 부팅 시 한 번
+만들어져 flash에 저장되고, 그 뒤로는 계속 그 값을 쓴다(직접 바꾸기 전까지). AP IP는 ESP32
+기본값인 `192.168.4.1`로 고정이다. AP Password 기본값은 `config.h`의
+`AP_PASSWORD_DEFAULT`이며, 두 값 모두 입력을 비워서 Enter를 치면 취소(변경 없음)로
+처리된다 — 원래 자동 생성 SSID로 되돌리려면 "6. Factory Reset"이 필요하다.
+
+Wi-Fi STA 연결 실패 시 출력:
 
 ```text
 [NETWORK]
@@ -470,10 +489,8 @@ Wi-Fi 연결 실패 시 출력:
 
 [WARN] Wi-Fi connection failed.
 [INFO] IP forwarding is unavailable until network is restored.
-[INFO] Use Serial menu to update Wi-Fi settings.
+[INFO] Use Serial menu (or the AP) to update Wi-Fi settings.
 ```
-
-AP 모드는 본 요구사항의 핵심이 아니므로 구현하지 않아도 된다.
 
 ### 12.1.1 Set DHCP / Static IP
 
@@ -914,7 +931,94 @@ Watching for a response (Raw Byte Monitor)...
 
 ---
 
-## 13. 구현 제외 항목
+## 13. Web Config Server
+
+USB Serial에 물리적으로 접근할 수 없는 상황을 위한 두 번째 설정 인터페이스 —
+이미 설치돼서 USB 케이블을 다시 꽂기 번거로운 장비, 또는 UART0가 RS485와
+연결돼 있어 USB Serial 자체를 메뉴/디버그용으로 못 쓰는 보드를 위함이다.
+`SerialMenu`와 동일한 `RoutingTable`/`Storage`/`Diagnostics`를 그대로
+참조하므로(`WebConfigServer.h/.cpp`) 두 UI가 항상 같은 flash 설정을 보고
+쓴다 — 한쪽에서 바꾼 값이 다른 쪽에도 바로 반영된다.
+
+동기 방식 `WebServer`(arduino-esp32 core 내장, 별도 `lib_deps` 불필요)를
+쓰며, HTML은 파일시스템 없이 `WebConfigServer.cpp` 안에 C++ 문자열로 직접
+들어있다(SerialMenu.cpp가 화면 전체를 한 파일에 담는 것과 같은 방식).
+
+### 13.1 AP+STA 동시 운용
+
+`connectWifi()`가 `WiFi.mode(WIFI_AP_STA)`로 STA(평소 Wi-Fi)와 AP를 동시에
+띄운다. AP는 STA 연결 성공 여부와 무관하게 **항상 켜져 있다** — Wi-Fi가 아예
+설정 안 됐거나 끊긴 상태에서도 웹 UI로 접근할 수 있게 하기 위함이다.
+
+- AP SSID/Password는 **Serial("5./6." 12.1절) 또는 웹(`/network`, 13.2절)에서 직접
+  바꿀 수 있다** — 저장 즉시 `applyApSettings()`(`GatewayActions.h/.cpp`, 13.4절)가
+  `WiFi.softAP()`를 재적용해서 재부팅 없이 반영된다.
+- AP SSID 기본값: `RS485Gateway-XXXX` (XXXX는 MAC 주소 뒷자리 4자리, 기기별로
+  다름). 최초 부팅 시(`cfg.wifi.apSsid`가 비어있을 때) `WebConfigServer::begin()`이
+  한 번만 만들어서 flash에 저장하고, 그 뒤로는 계속 저장된 값을 쓴다 — 사용자가
+  직접 바꾸기 전까지는 이 자동 생성값이 유지된다.
+- AP Password 기본값: `config.h`의 `AP_PASSWORD_DEFAULT`(`RoutingTable::applyDefaults()`가
+  굽는다)
+- AP IP: ESP32 기본값 `192.168.4.1` (고정, 설정 불가)
+- 웹 페이지 자체에는 로그인이 없다(신뢰된 LAN/AP 전제) — AP Wi-Fi 접속
+  비밀번호가 최소한의 방어선이다.
+
+Serial 메뉴의 "1. Network Settings" 화면에도 AP SSID/IP가 표시된다(12.1절) —
+Serial로만 접근 가능한 상태에서도 웹 UI로 넘어갈 방법을 알 수 있도록.
+
+### 13.2 페이지 구성
+
+Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 폼 하나로 평탄화했다.
+
+| 경로 | Serial 대응 | 비고 |
+|---|---|---|
+| `GET /` | Main Menu 상태 블록 | Wi-Fi(STA/AP) 상태, Debug Mode, 각 페이지 링크 |
+| `GET`/`POST /network` | Network Settings | SSID(스캔 드롭다운 + 직접 입력), Password(빈 칸 = 기존 유지), DHCP, Static IP/Gateway/Subnet, Retry 버튼, AP SSID/Password(별도 폼, `POST /network/ap`) |
+| `GET`/`POST /rs485` | RS485 Settings | Baudrate, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode |
+| `GET /routing` | Routing Table | CAM1~7 목록 |
+| `GET`/`POST /routing/cam?n=N` | Camera Detail | IP(빈 칸 = 삭제)/Port/Protocol(`RAW_DATA_UDP` 포함)/Address Mode |
+| `GET /counters` | Counters | 2초 자동 새로고침 |
+| `GET /debug` | Debug Mode | Debug ON/OFF, Last Packets, Send Test Command |
+| `GET /debug/live` | Live Packet Monitor | 1초 자동 새로고침. Serial과 달리 Debug Mode를 자동으로 켜지 않음 — `/debug`에서 먼저 켜야 함 |
+| `GET /debug/raw` | Raw Byte Monitor | 1초 자동 새로고침, 파싱/체크섬과 무관하게 항상 채워지는 별도 로그(13.3절) |
+| `POST /debug/test-command` | Send Test Command | Pelco-D/P Query Pan Position 프로브 전송 후 `/debug/raw`로 이동 |
+| `GET`/`POST /factory-reset` | Factory Reset | 경고 문구 + 확인 버튼(POST 전용, 타이핑 확인 대신 실수로 못 누르게 별도 페이지+버튼 클릭) |
+
+자동 새로고침은 JS 없이 `<meta http-equiv="refresh">`만 쓴다 — 임베디드
+환경에서 가장 단순하고 확실하게 동작하는 폴링 방식이라 이걸 기본으로 택했다.
+
+### 13.3 Raw Byte Monitor 백엔드
+
+Serial의 Raw Byte Monitor(`echoRawByte()`)는 그 화면이 켜져 있을 때만 Serial로
+직접 echo한다. 웹 페이지가 폴링할 데이터가 항상 있으려면 화면 상태와 무관한
+별도 저장소가 필요해서, `Diagnostics`에 `pushRawLog()`/`recentRawLog()`라는
+전용 링버퍼를 추가했다(파싱된 RX/TX 로그와 섞이지 않게 분리). `main.cpp`가
+Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바이트가 들어올
+때마다 항상 이 로그를 채운다.
+
+### 13.4 Serial과 공유하는 로직
+
+두 가지는 Serial/Web 양쪽에서 동일하게 동작해야 하는 규칙이라 별도 파일로 뽑아
+공유한다(한쪽만 고치면 두 UI가 다르게 동작하는 걸 방지):
+
+| 파일 | 내용 |
+|---|---|
+| `Rs485PinValidation.h/.cpp` | GPIO 예약/입력전용/스트래핑 핀 검사 |
+| `GatewayActions.h/.cpp` | Factory Reset 시퀀스, Pelco-D/P 테스트 커맨드 패킷 생성, AP SSID/Password 적용(`applyApSettings()`) |
+
+### 13.5 알려진 제약
+
+- Wi-Fi 스캔(`/network`)은 GET마다 `WiFi.scanNetworks()`를 동기 호출한다 —
+  Serial의 스캔과 동일한 방식으로, 페이지 로딩에 1~2초 걸릴 수 있다.
+- "Retry Wi-Fi Connection"은 최대 `WIFI_CONNECT_TIMEOUT_MS`(15초)까지 요청을
+  블로킹한다 — Serial의 "4. Retry Wi-Fi Connection"과 동일한 동작.
+- Response Mode(VISCA `NONE`/`SYNTHETIC`/`FORWARD`/`FORWARD_REWRITE`)는 Serial
+  메뉴에도 노출되어 있지 않아 웹에도 넣지 않았다 — 둘 다 `applyDefaults()`가
+  정하는 기본값(`NONE`)만 쓸 수 있다.
+
+---
+
+## 14. 구현 제외 항목
 
 다음 기능은 구현하지 않는다.
 
@@ -923,64 +1027,67 @@ Watching for a response (Raw Byte Monitor)...
 | ONVIF 제어     | 구현 복잡도가 높고 현재 목적은 VISCA 변환임 |
 | 영상 스트리밍  | 본 장치는 제어 신호 변환 장치임             |
 | RTSP 처리      | 제어 기능과 무관                            |
-| Pelco-D/P 변환 | 현재 목표는 VISCA 변환                      |
-| 웹 설정 UI     | 현재는 USB Serial 메뉴만 사용한다고 가정    |
-| 자동 AP 모드   | 현재 핵심 요구사항 아님                     |
 | NVR/VMS 연동   | 범위 밖                                     |
 
 ---
 
-## 14. 소스 구조
+## 15. 소스 구조
 
 ```text
 /src
   main.cpp
   config.h
-  ViscaParser.h
-  ViscaParser.cpp
-  Rs485Port.h
-  Rs485Port.cpp
-  IpViscaClient.h
-  IpViscaClient.cpp
-  SonyViscaClient.h
-  SonyViscaClient.cpp
-  RoutingTable.h
-  RoutingTable.cpp
-  SerialMenu.h
-  SerialMenu.cpp
-  Diagnostics.h
-  Diagnostics.cpp
-  Storage.h
-  Storage.cpp
+  ViscaParser.h / .cpp
+  PelcoDParser.h / .cpp
+  PelcoPParser.h / .cpp
+  Rs485Port.h / .cpp
+  IpViscaClient.h / .cpp
+  SonyViscaClient.h / .cpp
+  RawBridgeClient.h / .cpp
+  RoutingTable.h / .cpp
+  SerialMenu.h / .cpp
+  WebConfigServer.h / .cpp
+  Rs485PinValidation.h / .cpp
+  GatewayActions.h / .cpp
+  Diagnostics.h / .cpp
+  Storage.h / .cpp
+  StatusLed.h / .cpp
 ```
 
 모듈별 역할:
 
-| 모듈            | 역할                                          |
-| --------------- | --------------------------------------------- |
-| ViscaParser     | `0xFF` 기준 VISCA 패킷 파싱                   |
-| Rs485Port       | UART2 및 DE/RE 제어                           |
-| IpViscaClient   | Raw UDP/TCP IP VISCA 전송                     |
-| SonyViscaClient | Sony VISCA over IP framing 및 전송            |
-| RoutingTable    | 카메라 1~7 IP/Port/Protocol/Address Mode 관리 |
-| SerialMenu      | USB Serial 메뉴 입력/출력                     |
-| Diagnostics     | 카운터, 최근 패킷 로그, 디버그 출력 관리      |
-| Storage         | Preferences/NVS 저장 및 로드                  |
+| 모듈                | 역할                                                    |
+| ------------------- | ------------------------------------------------------- |
+| ViscaParser         | `0xFF` 기준 VISCA 패킷 파싱                              |
+| PelcoDParser        | Pelco-D 고정 7바이트 프레임 파싱(합산 체크섬)            |
+| PelcoPParser        | Pelco-P 고정 8바이트 프레임 파싱(XOR 체크섬)             |
+| Rs485Port           | UART2 및 DE/RE 제어                                      |
+| IpViscaClient       | Raw UDP/TCP IP VISCA 전송                                |
+| SonyViscaClient     | Sony VISCA over IP framing 및 전송                       |
+| RawBridgeClient     | Raw Bridge 모드 전용 UDP 소켓(고정 로컬 포트 리슨)       |
+| RoutingTable        | 카메라 1~7 IP/Port/Protocol/Address Mode 관리            |
+| SerialMenu          | USB Serial 메뉴 입력/출력                                |
+| WebConfigServer     | AP+STA 웹 설정 서버(13절) — SerialMenu와 같은 백엔드 공유 |
+| Rs485PinValidation  | GPIO 핀 검증 규칙(Serial/Web 공유)                       |
+| GatewayActions      | Factory Reset, Pelco 테스트 커맨드 생성, AP 설정 적용(Serial/Web 공유) |
+| Diagnostics         | 카운터, 최근 패킷/raw 바이트 로그, 디버그 출력 관리      |
+| Storage             | Preferences/NVS 저장 및 로드                             |
+| StatusLed           | GPIO2 상태 LED 제어                                      |
 
 ---
 
-## 15. Claude Code 구현 지시사항
+## 16. Claude Code 구현 지시사항
 
 이 프로젝트는 Arduino ESP32 펌웨어로 구현한다.
 
 핵심 요구사항:
 
 1. UART0는 USB Serial 메뉴와 디버그 전용으로 사용한다.
-2. UART2를 사용하여 RS485 VISCA 패킷을 수신한다.
-3. RS485 방향 제어 핀은 기본 GPIO4로 한다.
+2. UART2를 사용하여 RS485 패킷을 수신한다(VISCA/Pelco-D/Pelco-P/Raw Bridge, 12.2절).
+3. RS485 방향 제어 핀은 기본 GPIO27로 한다.
 4. RS485 기본 모드는 Receive이다.
 5. VISCA 패킷은 `0xFF`를 기준으로 구분한다.
-6. 패킷 첫 바이트 `0x81~0x87`을 카메라 1~7로 해석한다.
+6. 패킷 첫 바이트 `0x81~0x87`을 카메라 1~7로 해석한다(VISCA 입력 기준 — Pelco 입력은 ADDR 바이트로 매핑, 12.2절).
 7. 카메라 1~7 각각에 대해 IP, Port, Protocol, Address Mode를 저장한다.
 8. 해당 카메라 번호에 IP가 설정되어 있으면 IP VISCA로 전송한다.
 9. 해당 카메라 번호에 IP가 없으면 무시한다.
@@ -988,15 +1095,13 @@ Watching for a response (Raw Byte Monitor)...
 11. 기본 Address Mode는 `rewrite_0x81`이다.
 12. 기본 Protocol은 `IP_VISCA_RAW_UDP`이다.
 13. 기본 Port는 5678이다.
-14. Wi-Fi 연결 실패 시 자동 AP 모드로 전환하지 않는다.
-15. Wi-Fi 연결 실패 시 Serial 메뉴는 계속 사용할 수 있어야 한다.
-16. Wi-Fi 연결 실패 시 주기적으로 재접속을 시도한다.
-17. 웹 설정 UI는 구현하지 않는다.
-18. ONVIF는 구현하지 않는다.
-19. Pelco-D/P 변환은 구현하지 않는다.
-20. Debug Mode에서는 RS485 수신과 IP 전송을 실시간으로 출력한다.
-21. 설정은 Preferences/NVS에 저장하고 재부팅 후 복원한다.
-22. Serial 시작 메뉴는 다음 5개 항목만 사용한다.
+14. AP는 STA 연결 여부와 무관하게 항상 켜둔다(`WIFI_AP_STA`, 13.1절).
+15. Wi-Fi STA 연결 실패 시에도 Serial 메뉴와 웹 AP는 계속 사용할 수 있어야 한다.
+16. Wi-Fi STA 연결 실패 시 주기적으로 재접속을 시도한다.
+17. ONVIF는 구현하지 않는다.
+18. Debug Mode에서는 RS485 수신과 IP 전송을 실시간으로 출력한다.
+19. 설정은 Preferences/NVS에 저장하고 재부팅 후 복원한다.
+20. Serial 시작 메뉴는 다음 6개 항목만 사용한다.
 
 ```text
 1. Network Settings
@@ -1004,6 +1109,7 @@ Watching for a response (Raw Byte Monitor)...
 3. Routing Table
 4. Counters
 5. Debug Mode
+6. Factory Reset
 ```
 
 가능하면 메뉴 처리는 non-blocking에 가깝게 구현한다. Serial 메뉴가 표시되어 있어도 RS485 패킷 수신과 IP 전송이 중단되지 않아야 한다.

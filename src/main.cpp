@@ -13,6 +13,7 @@
 #include "SonyViscaClient.h"
 #include "RawBridgeClient.h"
 #include "SerialMenu.h"
+#include "WebConfigServer.h"
 #include "StatusLed.h"
 
 void connectWifi();
@@ -28,6 +29,7 @@ IpViscaClient ipViscaClient;
 SonyViscaClient sonyViscaClient;
 RawBridgeClient rawBridgeClient;
 SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, connectWifi);
+WebConfigServer webConfigServer(routingTable, storage, diagnostics, rs485, connectWifi);
 StatusLed statusLed;
 
 bool wifiIsStation = false;
@@ -57,6 +59,34 @@ void pollRawMonitor() {
   if (rawLineOpen && (millis() - lastRawByteMs) > RAW_MONITOR_GAP_MS) {
     Serial.println();
     rawLineOpen = false;
+  }
+}
+
+unsigned long lastDiagRawByteMs = 0;
+bool diagRawLineOpen = false;
+String diagRawLineBuf;
+
+// echoRawByte()/pollRawMonitor()는 Serial Raw Byte Monitor 화면이 켜져 있을 때만
+// 동작한다 (그 화면 자체가 트리거). 이건 그거랑 별개로, 화면 상태나 Input Protocol과
+// 무관하게 RS485 바이트가 들어올 때마다 항상 Diagnostics의 raw 로그에 쌓아서
+// WebConfigServer의 /debug/raw 폴링이 언제든 볼 게 있게 한다. 문자열 append + 링버퍼
+// push라 비용이 작아 항상 켜둬도 괜찮다.
+void accumulateDiagRawLog(uint8_t b) {
+  if (!diagRawLineOpen) {
+    diagRawLineBuf = "";
+    diagRawLineOpen = true;
+  }
+  if (b < 0x10) diagRawLineBuf += '0';
+  diagRawLineBuf += String(b, HEX);
+  diagRawLineBuf += ' ';
+  lastDiagRawByteMs = millis();
+}
+
+void pollDiagRawLog() {
+  if (diagRawLineOpen && (millis() - lastDiagRawByteMs) > RAW_MONITOR_GAP_MS) {
+    diagRawLineBuf.toUpperCase();
+    diagnostics.pushRawLog(diagRawLineBuf);
+    diagRawLineOpen = false;
   }
 }
 
@@ -167,18 +197,26 @@ const char* protocolTag(ProtocolMode mode) {
   return "?";
 }
 
-// Wi-Fi 연결을 시도한다. 실패해도 자동 AP 모드로 전환하지 않는다 - Serial 메뉴는
-// 계속 사용 가능하며, maintainWifi()가 주기적으로 재접속을 시도한다.
+// Wi-Fi STA 연결을 시도한다. 실패해도 Serial 메뉴와 WebConfigServer의 AP는 계속
+// 쓸 수 있다 (AP는 STA 연결 여부와 무관하게 항상 켜져 있음, WebConfigServer::begin()
+// 참고) - maintainWifi()가 주기적으로 STA 재접속을 시도한다.
 void connectWifi() {
   SystemConfig& cfg = routingTable.get();
+  // 부팅 중 첫 호출(setup())에서는 메뉴가 잠긴 상태라 항상 조용하다. 나중에
+  // "Retry Wi-Fi Connection"으로 다시 호출될 때는 메뉴가 열려 있어야만 호출 가능한
+  // 동작이라 자연히 verbose해진다.
+  bool verbose = serialMenu.menuActive();
 
   // WiFi.mode()는 SSID 유무와 상관없이 항상 먼저 호출한다 - 이것이 lwIP TCP/IP
   // 태스크를 초기화하며, 이걸 건너뛰면 이후 WiFiUDP::begin() 호출 시
   // "tcpip_send_msg_wait_sem ... Invalid mbox" assert로 재부팅 루프에 빠진다.
-  WiFi.mode(WIFI_STA);
+  // AP_STA로 하는 이유는 WebConfigServer의 AP를 STA와 동시에 띄우기 위함이다.
+  WiFi.mode(WIFI_AP_STA);
 
   if (strlen(cfg.wifi.ssid) == 0) {
-    Serial.println("No Wi-Fi SSID configured. Use Serial menu (Network Settings) to set one.");
+    if (verbose) {
+      Serial.println("No Wi-Fi SSID configured. Use Serial menu (Network Settings) to set one.");
+    }
     return;
   }
 
@@ -187,23 +225,27 @@ void connectWifi() {
                 cfg.wifi.subnet.toIPAddress());
   }
 
-  Serial.print("WiFi connecting to ");
-  Serial.print(cfg.wifi.ssid);
+  if (verbose) {
+    Serial.print("WiFi connecting to ");
+    Serial.print(cfg.wifi.ssid);
+  }
   WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
   wifiIsStation = true;
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < WIFI_CONNECT_TIMEOUT_MS) {
     delay(250);
-    Serial.print(".");
+    if (verbose) Serial.print(".");
   }
-  Serial.println();
+  if (verbose) Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
     wasWifiConnected = true;
-    Serial.print("WiFi connected: ");
-    Serial.println(WiFi.localIP());
-  } else {
+    if (verbose) {
+      Serial.print("WiFi connected: ");
+      Serial.println(WiFi.localIP());
+    }
+  } else if (verbose) {
     Serial.println("WiFi connect failed. Will retry periodically; Serial menu remains available.");
   }
 }
@@ -221,7 +263,7 @@ void maintainWifi() {
   }
 
   if (wasWifiConnected) {
-    Serial.println("WiFi disconnected, will retry");
+    if (serialMenu.menuActive()) Serial.println("WiFi disconnected, will retry");
     wasWifiConnected = false;
   }
 
@@ -233,8 +275,10 @@ void maintainWifi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     diagnostics.recordWifiReconnect();
-    Serial.print("WiFi reconnected: ");
-    Serial.println(WiFi.localIP());
+    if (serialMenu.menuActive()) {
+      Serial.print("WiFi reconnected: ");
+      Serial.println(WiFi.localIP());
+    }
   }
 }
 
@@ -749,8 +793,9 @@ void feedPelcoAutoByte(uint8_t b) {
 void setup() {
   Serial.begin(9600);  // UART0: USB Serial 메뉴/디버그 전용
   delay(200);
-  Serial.println();
-  Serial.println("ESP32 RS485 VISCA to IP VISCA Gateway starting...");
+  // 부팅 배너를 일부러 찍지 않는다 - 리셋 직후 Serial 메뉴가 잠금 해제(Enter 두 번)
+  // 되기 전까지는 어떤 메시지도 안 보내는 게 의도다. connectWifi()/maintainWifi()도
+  // 같은 이유로 메시지를 serialMenu.menuActive()로 게이팅한다.
 
   routingTable.applyDefaults();
   if (!storage.load(routingTable.get())) {
@@ -768,12 +813,12 @@ void setup() {
   sonyViscaClient.begin();
 
   serialMenu.begin();
-
-  Serial.println("Setup complete");
+  webConfigServer.begin();
 }
 
 void loop() {
   serialMenu.poll();
+  webConfigServer.poll();
   maintainWifi();
   statusLed.update(WiFi.status() == WL_CONNECTED);
 
@@ -794,6 +839,7 @@ void loop() {
     if (rawMonitor) {
       echoRawByte(b);
     }
+    accumulateDiagRawLog(b);
 
     switch (cfg.inputProtocol) {
       case InputProtocol::PELCO_D:
@@ -850,6 +896,7 @@ void loop() {
   if (rawMonitor) {
     pollRawMonitor();
   }
+  pollDiagRawLog();
 
   if (cfg.inputProtocol == InputProtocol::RAW_BRIDGE) {
     // 피어가 보낸 데이터는 RS485 바이트 도착과 무관하게 언제든 올 수 있으므로,

@@ -102,6 +102,13 @@ struct WifiConfig {
   StoredIp staticIp;
   StoredIp gateway;
   StoredIp subnet;
+
+  // WebConfigServer의 AP(13절)용 설정. apSsid가 빈 문자열이면 WebConfigServer::begin()이
+  // MAC 주소 뒷자리를 붙여 기기별로 구분되는 기본값을 한 번 만들어 여기에 저장한다 -
+  // 그 뒤로는 항상 이 필드값을 그대로 쓴다. apPassword는 applyDefaults()가
+  // AP_PASSWORD_DEFAULT로 미리 채워두므로 비어있을 일이 없다.
+  char apSsid[32];
+  char apPassword[64];
 };
 
 struct SystemConfig {

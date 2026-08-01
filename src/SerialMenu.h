@@ -27,6 +27,12 @@ class SerialMenu {
   // 무관하게 그 바이트를 hex로 그대로 echo해야 한다 (Raw Byte Monitor 화면).
   bool rawMonitorActive() const { return _screen == Screen::DEBUG_RAW; }
 
+  // 메뉴가 잠금 해제됐는지(빈 줄 Enter 두 번) - main.cpp가 부팅/Wi-Fi 상태 메시지를
+  // 잠금 해제 전까지 완전히 침묵시키는 데 쓴다 (리셋 직후 Serial에 아무 것도 안
+  // 찍히게 하기 위함). Debug Mode ON/OFF로 나오는 RX/TX 로그는 별개다 - 그건 사용자가
+  // (Serial이든 Web이든) 명시적으로 켠 기능이라 이 잠금과 무관하게 항상 동작한다.
+  bool menuActive() const { return _menuActive; }
+
  private:
   enum class Screen {
     MAIN,
@@ -46,6 +52,8 @@ class SerialMenu {
     WIFI_SSID,
     WIFI_SSID_CHOICE,
     WIFI_PASSWORD,
+    AP_SSID,
+    AP_PASSWORD,
     STATIC_IP_VALUE,
     STATIC_GATEWAY_VALUE,
     STATIC_SUBNET_VALUE,

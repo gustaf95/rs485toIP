@@ -1,44 +1,10 @@
 #include "SerialMenu.h"
 #include <WiFi.h>
+#include "Rs485PinValidation.h"
+#include "GatewayActions.h"
 
 namespace {
 const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
-const int kMaxGpio = 39;
-
-// GPIO1/3: UART0 (USB Serial 메뉴 전용), GPIO6~11: 내장 SPI Flash 전용 - 절대 사용 불가.
-bool isReservedGpio(uint8_t pin) {
-  return pin == 1 || pin == 3 || (pin >= 6 && pin <= 11);
-}
-
-// GPIO34~39: 입력 전용 - 출력(TX, DE/RE)으로는 사용 불가.
-bool isInputOnlyGpio(uint8_t pin) {
-  return pin >= 34 && pin <= 39;
-}
-
-// 부팅 모드를 결정하는 스트래핑 핀 - 사용은 가능하나 외부 배선에 따라 부팅에 영향을 줄 수 있어 경고만 표시.
-bool isStrappingGpio(uint8_t pin) {
-  return pin == 0 || pin == 2 || pin == 5 || pin == 12 || pin == 15;
-}
-
-bool validateRs485Pin(int pin, bool requireOutput, String* errorOut) {
-  if (pin < 0 || pin > kMaxGpio) {
-    *errorOut = "Invalid GPIO number (0-39).";
-    return false;
-  }
-  if (pin == STATUS_LED_PIN) {
-    *errorOut = "GPIO" + String(pin) + " is reserved for the status LED.";
-    return false;
-  }
-  if (isReservedGpio((uint8_t)pin)) {
-    *errorOut = "GPIO" + String(pin) + " is reserved (UART0 console or internal SPI flash).";
-    return false;
-  }
-  if (requireOutput && isInputOnlyGpio((uint8_t)pin)) {
-    *errorOut = "GPIO" + String(pin) + " is input-only; cannot be used here.";
-    return false;
-  }
-  return true;
-}
 }  // namespace
 
 String SerialMenu::protocolName(ProtocolMode mode) {
@@ -79,10 +45,10 @@ String SerialMenu::pelcoResponseModeName(PelcoResponseMode mode) {
   return "?";
 }
 
-void SerialMenu::begin() {
-  Serial.println();
-  Serial.println("USB Serial menu idle - press Enter twice (blank line) to open the Main Menu.");
-}
+// 의도적으로 아무것도 출력하지 않는다 - 리셋 직후 Serial은 완전히 침묵해야 하고
+// (main.cpp의 부팅/Wi-Fi 메시지도 마찬가지, menuActive() 참고), 메뉴를 여는 방법은
+// 문서(readme.md)에만 남긴다.
+void SerialMenu::begin() {}
 
 void SerialMenu::poll() {
   while (Serial.available()) {
@@ -232,7 +198,7 @@ void SerialMenu::printNetworkMenu() {
   Serial.println(" 1. Network Settings");
   Serial.println("============================================================");
   Serial.println();
-  Serial.print("  Wi-Fi Mode       : STA\n");
+  Serial.print("  Wi-Fi Mode       : AP+STA\n");
   Serial.print("  Wi-Fi Status     : ");
   Serial.println(connected ? "Connected" : "Disconnected");
   Serial.print("  SSID             : ");
@@ -241,6 +207,10 @@ void SerialMenu::printNetworkMenu() {
   Serial.println(cfg.wifi.useDhcp ? "Enabled" : "Disabled");
   Serial.print("  ESP32 IP         : ");
   Serial.println(connected ? WiFi.localIP().toString() : "Not assigned");
+  Serial.print("  AP SSID          : ");
+  Serial.println(WiFi.softAPSSID());
+  Serial.print("  AP IP            : ");
+  Serial.println(WiFi.softAPIP());
   Serial.print("  Gateway          : ");
   Serial.println(cfg.wifi.gateway.toIPAddress().toString());
   Serial.print("  Subnet           : ");
@@ -253,6 +223,8 @@ void SerialMenu::printNetworkMenu() {
   Serial.println("  2. Set Wi-Fi Password");
   Serial.println("  3. Set DHCP / Static IP");
   Serial.println("  4. Retry Wi-Fi Connection");
+  Serial.println("  5. Set AP SSID");
+  Serial.println("  6. Set AP Password");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -287,6 +259,14 @@ void SerialMenu::handleNetworkMenu(const String& line) {
     Serial.println("Retrying Wi-Fi connection...");
     if (_wifiRetry) _wifiRetry();
     printNetworkMenu();
+  } else if (line == "5") {
+    Serial.print("Enter AP SSID (blank to cancel, currently \"");
+    Serial.print(WiFi.softAPSSID());
+    Serial.print("\"): ");
+    _prompt = Prompt::AP_SSID;
+  } else if (line == "6") {
+    Serial.print("Enter AP Password (blank to cancel, min 8 chars for WPA2): ");
+    _prompt = Prompt::AP_PASSWORD;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -812,6 +792,30 @@ void SerialMenu::handlePrompt(const String& line) {
       printNetworkMenu();
       break;
     }
+    case Prompt::AP_SSID: {
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+      } else {
+        line.toCharArray(cfg.wifi.apSsid, sizeof(cfg.wifi.apSsid));
+        _storage.save(cfg);
+        applyApSettings(cfg);
+        Serial.println("AP SSID updated and saved to flash.");
+      }
+      printNetworkMenu();
+      break;
+    }
+    case Prompt::AP_PASSWORD: {
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+      } else {
+        line.toCharArray(cfg.wifi.apPassword, sizeof(cfg.wifi.apPassword));
+        _storage.save(cfg);
+        applyApSettings(cfg);
+        Serial.println("AP Password updated and saved to flash.");
+      }
+      printNetworkMenu();
+      break;
+    }
     case Prompt::STATIC_IP_VALUE: {
       IPAddress ip;
       if (ip.fromString(line)) {
@@ -1048,11 +1052,7 @@ void SerialMenu::handlePrompt(const String& line) {
     case Prompt::FACTORY_RESET_CONFIRM: {
       if (line == "YES") {
         Serial.println("Factory reset confirmed. Restoring defaults and rebooting...");
-        _routing.applyDefaults();
-        applyRs485Settings(cfg);  // cfg는 _routing.get() 참조라 applyDefaults() 결과를 그대로 반영
-        Serial.flush();
-        delay(300);
-        ESP.restart();
+        performFactoryReset(_routing, _storage, _rs485);
       } else {
         Serial.println("Cancelled.");
         printMainMenu();
@@ -1060,22 +1060,15 @@ void SerialMenu::handlePrompt(const String& line) {
       break;
     }
     case Prompt::DEBUG_TEST_CMD_PROTOCOL_CHOICE: {
-      // Query Pan Position, address 1 고정 - Pelco-D/P 양쪽 다 응답을 정의하고 있는
-      // 조회 명령이라 "뭔가 응답이 오는지" 테스트하기에 적합하다 (doc/pelcoD_command.md
-      // 5절, doc/pelcoP_command.md 5절의 0x51/Response 0x59 참고).
       if (line == "1") {
-        uint8_t packet[7] = {PELCO_D_START_BYTE, 0x01, 0x00, 0x51, 0x00, 0x00, 0x00};
-        uint8_t sum = 0;
-        for (uint8_t i = 1; i < 6; i++) sum += packet[i];
-        packet[6] = sum;
+        uint8_t packet[7];
+        buildPelcoDTestCommand(packet);
         _rs485.writePacket(packet, sizeof(packet));
         Serial.print("Sent (Pelco-D): ");
         Serial.println(viscaBytesToHex(packet, sizeof(packet)));
       } else if (line == "2") {
-        uint8_t packet[8] = {PELCO_P_START_BYTE, 0x01, 0x00, 0x51, 0x00, 0x00, PELCO_P_ETX_BYTE, 0x00};
-        uint8_t x = 0;
-        for (uint8_t i = 1; i < 6; i++) x ^= packet[i];
-        packet[7] = x;
+        uint8_t packet[8];
+        buildPelcoPTestCommand(packet);
         _rs485.writePacket(packet, sizeof(packet));
         Serial.print("Sent (Pelco-P): ");
         Serial.println(viscaBytesToHex(packet, sizeof(packet)));

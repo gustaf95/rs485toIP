@@ -46,6 +46,13 @@ class Diagnostics {
   const String* recentLog() const { return _recentLog; }
   uint8_t recentLogDepth() const { return DIAG_LOG_DEPTH; }
 
+  // Raw Byte Monitor(Serial/Web 공통)용 별도 링버퍼. 파싱된 RX/TX 로그와 섞이지
+  // 않도록 분리했다 - main.cpp가 Input Protocol/화면 상태와 무관하게 RS485 바이트가
+  // 들어올 때마다 항상 채운다(웹 페이지가 폴링할 때 데이터가 있도록).
+  void pushRawLog(const String& entry);
+  const String* recentRawLog() const { return _recentRawLog; }
+  uint8_t recentRawLogDepth() const { return DIAG_RAW_LOG_DEPTH; }
+
  private:
   uint32_t _rs485RxTotal = 0;
   uint32_t _forwarded = 0;
@@ -61,4 +68,5 @@ class Diagnostics {
   uint32_t _wifiReconnect = 0;
 
   String _recentLog[DIAG_LOG_DEPTH];
+  String _recentRawLog[DIAG_RAW_LOG_DEPTH];
 };

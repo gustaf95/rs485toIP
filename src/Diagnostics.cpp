@@ -23,6 +23,13 @@ void Diagnostics::pushLog(const String& entry) {
   _recentLog[0] = entry;
 }
 
+void Diagnostics::pushRawLog(const String& entry) {
+  for (int i = DIAG_RAW_LOG_DEPTH - 1; i > 0; i--) {
+    _recentRawLog[i] = _recentRawLog[i - 1];
+  }
+  _recentRawLog[0] = entry;
+}
+
 void Diagnostics::recordRs485Rx(const uint8_t* data, uint8_t len) {
   _rs485RxTotal++;
   pushLog("[RX] " + viscaBytesToHex(data, len));
