@@ -46,6 +46,7 @@ String SerialMenu::protocolName(ProtocolMode mode) {
     case ProtocolMode::IP_VISCA_RAW_UDP: return "IP_VISCA_RAW_UDP";
     case ProtocolMode::IP_VISCA_RAW_TCP: return "IP_VISCA_RAW_TCP";
     case ProtocolMode::SONY_VISCA_UDP: return "SONY_VISCA_UDP";
+    case ProtocolMode::RAW_DATA_UDP: return "RAW_DATA_UDP";
   }
   return "?";
 }
@@ -65,6 +66,7 @@ String SerialMenu::inputProtocolName(InputProtocol mode) {
     case InputProtocol::PELCO_D: return "Pelco-D";
     case InputProtocol::PELCO_P: return "Pelco-P";
     case InputProtocol::PELCO_AUTO: return "Pelco-D/P Autodetect";
+    case InputProtocol::RAW_BRIDGE: return "Raw Bridge";
   }
   return "?";
 }
@@ -450,6 +452,7 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.println("2. Pelco-D");
     Serial.println("3. Pelco-P");
     Serial.println("4. Pelco-D/P Autodetect");
+    Serial.println("5. Raw Bridge (no parsing - tunnels raw bytes to a peer gateway)");
     Serial.print("> ");
     _prompt = Prompt::RS485_INPUT_PROTOCOL_CHOICE;
   } else if (line == "6") {
@@ -569,6 +572,7 @@ void SerialMenu::handleCameraDetailMenu(const String& line) {
     Serial.println("1. IP_VISCA_RAW_UDP");
     Serial.println("2. IP_VISCA_RAW_TCP");
     Serial.println("3. SONY_VISCA_UDP");
+    Serial.println("4. RAW_DATA_UDP (Raw Bridge peer - see RS485 Settings > Input Protocol)");
     Serial.print("> ");
     _prompt = Prompt::ROUTING_SET_PROTOCOL_VALUE;
   } else if (line == "5") {
@@ -876,6 +880,12 @@ void SerialMenu::handlePrompt(const String& line) {
         cfg.inputProtocol = InputProtocol::PELCO_AUTO;
         _storage.save(cfg);
         Serial.println("Input protocol set to Pelco-D/P Autodetect and saved to flash.");
+      } else if (line == "5") {
+        cfg.inputProtocol = InputProtocol::RAW_BRIDGE;
+        _storage.save(cfg);
+        Serial.println("Input protocol set to Raw Bridge and saved to flash.");
+        Serial.println("Set a camera slot's Protocol to RAW_DATA_UDP with the peer");
+        Serial.println("gateway's IP/Port in Routing Table to configure the bridge peer.");
       } else {
         Serial.println("Invalid choice.");
       }
@@ -1011,7 +1021,7 @@ void SerialMenu::handlePrompt(const String& line) {
     }
     case Prompt::ROUTING_SET_PROTOCOL_VALUE: {
       int choice = line.toInt();
-      if (choice >= 1 && choice <= 3) {
+      if (choice >= 1 && choice <= 4) {
         _routing.camera(_pendingCamNumber)->protocol = (ProtocolMode)(choice - 1);
         _storage.save(cfg);
         Serial.println("Protocol set and saved to flash.");

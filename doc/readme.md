@@ -560,6 +560,7 @@ Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장�
 2. Pelco-D
 3. Pelco-P
 4. Pelco-D/P Autodetect
+5. Raw Bridge
 ```
 
 Pelco-D를 선택하면 `PelcoDParser`가 0xFF로 시작하는 고정 7바이트 프레임(Address, Command1,
@@ -590,6 +591,34 @@ Pelco-P를 개별 지정할 수 있어(`pelcoD_command.md` 9.1/9.3절), 같은 R
 프로토콜이 실제로 섞여 들어올 가능성에 대비한 옵션이다. VISCA는 종료 바이트 0xFF가
 Pelco-D의 시작 바이트와 겹쳐 안전하게 자동 판별할 수 없으므로 이 옵션에 포함되지 않는다 —
 VISCA를 쓰려면 "1. VISCA"를 명시적으로 선택해야 한다.
+
+"Raw Bridge"는 VISCA/Pelco-D/Pelco-P 파싱을 전혀 하지 않는다. 이 firmware를 올린 게이트웨이
+두 대를 마주 보게 놓고, RS485 버스 하나를 IP망 너머로 그대로 연장하는 투명 브릿지로 쓰기
+위한 모드다 — 예를 들어 컨트롤러 쪽 RS485와 카메라 쪽 RS485가 물리적으로 멀리 떨어져 있을
+때, 게이트웨이 A/B를 각각 그 옆에 두고 Wi-Fi로 이어주는 식이다. VISCA 변환도, 카메라
+1~7번 라우팅도 전혀 관여하지 않으므로 애초에 RS485 프로토콜이 VISCA/Pelco가 아니어도
+동작한다.
+
+**설정 방법**: Raw Bridge는 "피어가 누구인지"를 Routing Table의 카메라 슬롯 하나를 빌려서
+저장한다 — 카메라 번호는 임의로 골라도 된다(예: CAM6). 그 슬롯의 Protocol을
+`RAW_DATA_UDP`로, IP/Port를 상대편 게이트웨이의 IP/Port로 설정한다 (12.3절 "4. Set
+Protocol" 참고). 두 게이트웨이 모두 Input Protocol을 Raw Bridge로, 각자의 라우팅 테이블에
+"상대방의 IP"를 RAW_DATA_UDP로 등록해두면 서로 마주 보는 P2P 링크가 완성된다. 같은 슬롯
+번호를 쓸 필요는 없고, **양쪽이 같은 Port 번호를 쓰는 게 중요하다** — 그 Port로 로컬에서도
+리슨하고 상대에게도 그 Port로 보내기 때문이다.
+
+동작 방식: RS485로 들어오는 바이트를 계속 모으다가, 20ms(`RAW_BRIDGE_GAP_MS`) 이상 새
+바이트가 없으면(=한 버스트가 끝났다고 판단되면) 모아둔 바이트를 UDP 패킷 하나로 피어에게
+보낸다. 피어에게서 UDP 패킷이 오면 그 payload를 그대로 RS485 TX로 내보낸다. 체크섬 검증도,
+주소 기반 라우팅도 없다 — 순수하게 바이트 파이프다. 현재는 UDP만 지원한다 — TCP로 만들려면
+양쪽 다 리슨하면서 동시에 상대에게 연결을 시도하는 로직(그리고 끊겼을 때 재연결)이 필요해
+UDP보다 훨씬 복잡하고, 사설 링크에서 가끔 있는 UDP 유실은 대개 감내할 만하다고 보고 있다.
+필요하면 추후 추가할 수 있다.
+
+Debug Mode에서는 `[RAW-BRIDGE TX]`/`[RAW-BRIDGE RX]`로 로그가 찍히고, `RS485 RX Total`/
+`Forwarded`/`IP TX Success`/`RS485 TX Response` 카운터를 그대로 재사용한다. 피어 슬롯이
+설정 안 돼 있으면(IP 비어있음) 받은 바이트는 조용히 버려지고 `Ignored (No IP)` 카운터가
+올라간다.
 
 "6. Set Pelco Response Mode"는 Pelco-D/Pelco-P/Autodetect 공통 설정이다. 유효한 Pelco
 패킷을 받을 때마다 General Response(ACK, Pelco-D는 `FF ADDR 00 CKSM` 4바이트, Pelco-P는
@@ -681,6 +710,11 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
 
 각 항목은 값을 입력하는 즉시 flash에 저장되며, 별도의 저장 메뉴는 없다.
 "3. Set Camera Port" 입력 시 아무 값도 입력하지 않고 Enter만 누르면 변경 없이 취소된다.
+
+"4. Set Protocol"의 네 번째 옵션 `RAW_DATA_UDP`는 일반적인 VISCA 라우팅(카메라 1~7번 주소
+기반)에는 쓰이지 않는다 — RS485 Settings의 Input Protocol을 "5. Raw Bridge"로 설정했을 때,
+이 슬롯을 "브릿지 피어" 주소로 지정하는 용도다. 자세한 설정/동작 방식은 12.2절 "Raw
+Bridge" 참고.
 
 ## 12.4 Counters
 
@@ -896,7 +930,7 @@ Watching for a response (Raw Byte Monitor)...
 
 ---
 
-## 14. 권장 소스 구조
+## 14. 소스 구조
 
 ```text
 /src

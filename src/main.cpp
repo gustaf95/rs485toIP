@@ -11,6 +11,7 @@
 #include "Rs485Port.h"
 #include "IpViscaClient.h"
 #include "SonyViscaClient.h"
+#include "RawBridgeClient.h"
 #include "SerialMenu.h"
 #include "StatusLed.h"
 
@@ -25,6 +26,7 @@ PelcoDParser pelcoDParser;
 PelcoPParser pelcoPParser;
 IpViscaClient ipViscaClient;
 SonyViscaClient sonyViscaClient;
+RawBridgeClient rawBridgeClient;
 SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, connectWifi);
 StatusLed statusLed;
 
@@ -58,11 +60,109 @@ void pollRawMonitor() {
   }
 }
 
+uint8_t rawBridgeTxBuf[RAW_BRIDGE_BUFFER_SIZE];
+uint8_t rawBridgeTxLen = 0;
+unsigned long rawBridgeLastByteMs = 0;
+
+// InputProtocol::RAW_BRIDGE에서 "브릿지 피어"로 쓸 카메라 슬롯을 찾는다 - Protocol이
+// RAW_DATA_UDP로 설정되어 있고 IP가 설정된 첫 번째 슬롯. 여러 슬롯에 RAW_DATA_UDP를
+// 설정해도 가장 번호가 낮은 슬롯 하나만 쓰인다 (브릿지는 피어가 하나뿐이라는 전제 -
+// 1:7 카메라 라우팅이 아니라 두 게이트웨이 간의 단일 링크다).
+CameraSlot* findRawBridgePeer() {
+  for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
+    CameraSlot* slot = routingTable.camera(camNumber);
+    if (slot->isConfigured() && slot->protocol == ProtocolMode::RAW_DATA_UDP) {
+      return slot;
+    }
+  }
+  return nullptr;
+}
+
+// 모아뒀던 raw 바이트를 UDP 한 패킷으로 피어에게 보낸다. VISCA/Pelco 파싱이 전혀
+// 없으므로 체크섬 검증도, 주소 기반 라우팅도 없다 - 그냥 RS485에 흐른 바이트 그대로.
+void flushRawBridgeTx() {
+  if (rawBridgeTxLen == 0) return;
+
+  SystemConfig& cfg = routingTable.get();
+  diagnostics.recordRs485Rx(rawBridgeTxBuf, rawBridgeTxLen);
+
+  CameraSlot* peer = findRawBridgePeer();
+  if (!peer) {
+    diagnostics.recordIgnoredNoIp(rawBridgeTxBuf, rawBridgeTxLen);
+    if (cfg.debugMode) {
+      Serial.println("[ACTION] Raw Bridge: no peer configured (no camera slot set to RAW_DATA_UDP) - dropped");
+    }
+    rawBridgeTxLen = 0;
+    return;
+  }
+
+  rawBridgeClient.rebind(peer->port);
+  bool ok = rawBridgeClient.send(peer->ip.toIPAddress(), peer->port, rawBridgeTxBuf, rawBridgeTxLen);
+  String target = peer->ip.toIPAddress().toString() + ":" + String(peer->port);
+  diagnostics.recordForwarded(rawBridgeTxBuf, rawBridgeTxLen, target);
+
+  if (ok) {
+    diagnostics.recordIpTxSuccess();
+    if (cfg.debugMode) {
+      Serial.print("[RAW-BRIDGE TX] ");
+      Serial.print(target);
+      Serial.print(" | ");
+      Serial.println(viscaBytesToHex(rawBridgeTxBuf, rawBridgeTxLen));
+    }
+  } else {
+    diagnostics.recordIpTxFailed();
+    if (cfg.debugMode) {
+      Serial.print("[ERROR] Raw Bridge UDP TX failed -> ");
+      Serial.println(target);
+    }
+  }
+
+  rawBridgeTxLen = 0;
+}
+
+void feedRawBridgeByte(uint8_t b) {
+  rawBridgeTxBuf[rawBridgeTxLen++] = b;
+  rawBridgeLastByteMs = millis();
+  if (rawBridgeTxLen >= sizeof(rawBridgeTxBuf)) {
+    flushRawBridgeTx();
+  }
+}
+
+void pollRawBridgeTx() {
+  if (rawBridgeTxLen > 0 && (millis() - rawBridgeLastByteMs) > RAW_BRIDGE_GAP_MS) {
+    flushRawBridgeTx();
+  }
+}
+
+// 피어에게서 도착한 UDP 페이로드를 그대로 RS485로 내보낸다 (반대 방향).
+void pollRawBridgeRx() {
+  CameraSlot* peer = findRawBridgePeer();
+  if (!peer) return;
+  rawBridgeClient.rebind(peer->port);
+
+  uint8_t buf[RAW_BRIDGE_BUFFER_SIZE];
+  IPAddress remoteIp;
+  uint8_t len = rawBridgeClient.receive(buf, sizeof(buf), &remoteIp);
+  if (len == 0) return;
+
+  rs485.writePacket(buf, len);
+  diagnostics.recordRs485TxResponse();
+
+  SystemConfig& cfg = routingTable.get();
+  if (cfg.debugMode) {
+    Serial.print("[RAW-BRIDGE RX] ");
+    Serial.print(remoteIp);
+    Serial.print(" | ");
+    Serial.println(viscaBytesToHex(buf, len));
+  }
+}
+
 const char* protocolTag(ProtocolMode mode) {
   switch (mode) {
     case ProtocolMode::IP_VISCA_RAW_UDP: return "UDP";
     case ProtocolMode::IP_VISCA_RAW_TCP: return "TCP";
     case ProtocolMode::SONY_VISCA_UDP: return "SONY_UDP";
+    case ProtocolMode::RAW_DATA_UDP: return "RAW_UDP";  // sendToCamera() 경로는 안 타지만 방어적으로 채워둠
   }
   return "?";
 }
@@ -167,6 +267,10 @@ bool sendToCamera(const CameraSlot& slot, const uint8_t* data, uint8_t len) {
       return ipViscaClient.sendTcp(ip, slot.port, data, len);
     case ProtocolMode::SONY_VISCA_UDP:
       return sonyViscaClient.send(ip, slot.port, data, len);
+    case ProtocolMode::RAW_DATA_UDP:
+      // Raw Bridge 전용 값 - VISCA 라우팅(handleViscaPacket/forwardTranslatedVisca)이
+      // 이 프로토콜의 슬롯으로 보내질 일은 없지만, 방어적으로 실패 처리한다.
+      return false;
   }
   return false;
 }
@@ -701,6 +805,9 @@ void loop() {
       case InputProtocol::PELCO_AUTO:
         feedPelcoAutoByte(b);
         break;
+      case InputProtocol::RAW_BRIDGE:
+        feedRawBridgeByte(b);
+        break;
       case InputProtocol::VISCA:
       default:
         feedViscaByte(b);
@@ -729,6 +836,9 @@ void loop() {
         diagnostics.recordTimeout();
       }
       break;
+    case InputProtocol::RAW_BRIDGE:
+      pollRawBridgeTx();
+      break;
     case InputProtocol::VISCA:
     default:
       if (viscaParser.poll() == ViscaParseResult::TIMEOUT_DISCARD) {
@@ -739,6 +849,12 @@ void loop() {
 
   if (rawMonitor) {
     pollRawMonitor();
+  }
+
+  if (cfg.inputProtocol == InputProtocol::RAW_BRIDGE) {
+    // 피어가 보낸 데이터는 RS485 바이트 도착과 무관하게 언제든 올 수 있으므로,
+    // 위 while(rs485.available()) 루프와 별개로 매 loop() 회전마다 확인한다.
+    pollRawBridgeRx();
   }
 
   pollCameraResponses();

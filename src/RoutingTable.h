@@ -4,10 +4,14 @@
 #include <IPAddress.h>
 #include "config.h"
 
+// RAW_DATA_UDP는 sendToCamera()의 일반 VISCA 라우팅 경로로는 쓰이지 않는다 -
+// InputProtocol::RAW_BRIDGE 모드에서 카메라 슬롯 하나를 "브릿지 피어"로 지정하는
+// 용도로만 쓰이며, main.cpp의 findRawBridgePeer()가 이 값으로 슬롯을 찾는다.
 enum class ProtocolMode : uint8_t {
   IP_VISCA_RAW_UDP = 0,
   IP_VISCA_RAW_TCP = 1,
-  SONY_VISCA_UDP = 2
+  SONY_VISCA_UDP = 2,
+  RAW_DATA_UDP = 3
 };
 
 enum class AddressMode : uint8_t {
@@ -23,9 +27,8 @@ enum class ResponseMode : uint8_t {
   FORWARD_REWRITE = 3
 };
 
-// RS485로 들어오는 입력이 어느 프로토콜인지. Pelco-D/Pelco-P는 아직 프레이밍/
-// 체크섬 검증과 ACK 응답까지만 구현되어 있고, VISCA로의 명령 변환은 별도
-// 작업이다.
+// RS485로 들어오는 입력이 어느 프로토콜인지. Pelco-D/Pelco-P는 FoMaKo가 지원하는
+// 범위의 명령을 VISCA로 변환해서 전달한다 (src/main.cpp translatePelcoAndForward()).
 //
 // PELCO_AUTO는 Pelco-D와 Pelco-P를 패킷 단위로 실시간 자동 판별한다. 이게
 // 가능한 이유는 두 프로토콜의 시작 바이트가 겹치지 않기 때문이다(Pelco-D는
@@ -35,11 +38,20 @@ enum class ResponseMode : uint8_t {
 // VISCA는 종료 바이트 0xFF가 Pelco-D의 시작 바이트와 겹쳐 안전하게 자동
 // 판별할 수 없으므로(같은 문서 참고) 이 옵션에 포함하지 않는다 - VISCA는
 // 항상 명시적으로 선택해야 한다.
+//
+// RAW_BRIDGE는 VISCA/Pelco-D/Pelco-P 파싱을 전혀 하지 않는다 - RS485에 흐르는
+// 바이트를 그대로 묶어서 카메라 슬롯 하나(Protocol=RAW_DATA_UDP로 지정된 슬롯)의
+// IP:Port로 UDP 전송하고, 그 슬롯에서 받은 UDP 페이로드는 그대로 RS485 TX로
+// 내보낸다. 이 firmware를 올린 게이트웨이 두 대를 마주 보게 설정하면(서로의 IP를
+// 상대방 슬롯에 적어 넣으면) RS485 버스 하나를 IP망 너머로 그대로 연장하는
+// 투명 브릿지가 된다. 두 대 다 카메라가 아니라 컨트롤러/카메라를 직접 상대하므로
+// 프로토콜을 몰라도(심지어 VISCA/Pelco도 아닌 다른 RS485 프로토콜이어도) 동작한다.
 enum class InputProtocol : uint8_t {
   VISCA = 0,
   PELCO_D = 1,
   PELCO_P = 2,
-  PELCO_AUTO = 3
+  PELCO_AUTO = 3,
+  RAW_BRIDGE = 4
 };
 
 // Pelco-D/Pelco-P 입력을 받았을 때 RS485로 General Response(ACK)를 돌려줄지

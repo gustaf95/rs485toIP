@@ -62,3 +62,14 @@
 // 끊어서 다음 버스트를 새 줄에 출력한다 (프로토콜 프레이밍 타임아웃과 무관한, 순수
 // 가독성용 구분자).
 #define RAW_MONITOR_GAP_MS 50
+
+// ---- Raw Bridge ----
+// RAW_BRIDGE Input Protocol에서 RS485로 들어오는 바이트를 UDP로 묶어 보낼 때 쓰는
+// 값. 한 번에 한 바이트씩 UDP로 쏘면 오버헤드가 크므로, 이 시간(ms) 이상 새 바이트가
+// 없을 때(=한 명령의 바이트가 다 도착했다고 볼 수 있을 때) 모아뒀던 바이트를 한
+// UDP 패킷으로 전송한다. Raw Byte Monitor의 구분 기준(RAW_MONITOR_GAP_MS)과 값은
+// 같지만, 이쪽은 실제 네트워크 전송 타이밍에 영향을 주는 별개의 설정이라 분리했다.
+#define RAW_BRIDGE_GAP_MS 20
+// 버퍼가 이 크기에 도달하면 gap을 기다리지 않고 즉시 전송한다 (VISCA_BUFFER_SIZE와
+// 동일하게 맞춰 이 프로젝트의 다른 버퍼들과 일관성을 유지한다).
+#define RAW_BRIDGE_BUFFER_SIZE VISCA_BUFFER_SIZE
