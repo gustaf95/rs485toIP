@@ -59,6 +59,24 @@ String SerialMenu::addressModeName(AddressMode mode) {
   return "?";
 }
 
+String SerialMenu::inputProtocolName(InputProtocol mode) {
+  switch (mode) {
+    case InputProtocol::VISCA: return "VISCA";
+    case InputProtocol::PELCO_D: return "Pelco-D";
+    case InputProtocol::PELCO_P: return "Pelco-P";
+    case InputProtocol::PELCO_AUTO: return "Pelco-D/P Autodetect";
+  }
+  return "?";
+}
+
+String SerialMenu::pelcoResponseModeName(PelcoResponseMode mode) {
+  switch (mode) {
+    case PelcoResponseMode::SYNTHETIC: return "Respond (synthetic ACK)";
+    case PelcoResponseMode::NONE: return "No response";
+  }
+  return "?";
+}
+
 void SerialMenu::begin() {
   printMainMenu();
 }
@@ -111,6 +129,7 @@ void SerialMenu::handleLine(const String& line) {
     case Screen::COUNTERS: handleCountersMenu(line); break;
     case Screen::DEBUG: handleDebugMenu(line); break;
     case Screen::DEBUG_LIVE: handleDebugLiveMenu(line); break;
+    case Screen::DEBUG_RAW: handleDebugRawMenu(line); break;
   }
 }
 
@@ -145,6 +164,7 @@ void SerialMenu::printMainMenu() {
   Serial.println("  3. Routing Table");
   Serial.println("  4. Counters");
   Serial.println("  5. Debug Mode");
+  Serial.println("  6. Factory Reset");
   Serial.println();
   Serial.println("============================================================");
   Serial.print("Select menu number: ");
@@ -166,6 +186,13 @@ void SerialMenu::handleMainMenu(const String& line) {
   } else if (line == "5") {
     _screen = Screen::DEBUG;
     printDebugMenu();
+  } else if (line == "6") {
+    Serial.println();
+    Serial.println("WARNING: This erases ALL settings (Wi-Fi, RS485, routing table,");
+    Serial.println("input protocol, everything) and restores factory defaults, then");
+    Serial.println("reboots. This cannot be undone.");
+    Serial.print("Type YES to confirm, or press Enter to cancel: ");
+    _prompt = Prompt::FACTORY_RESET_CONFIRM;
   } else {
     printMainMenu();
   }
@@ -358,6 +385,10 @@ void SerialMenu::printRs485Menu() {
   Serial.println(cfg.rs485Baudrate);
   Serial.println("  Format           : 8N1");
   Serial.println("  Default Mode     : Receive");
+  Serial.print("  Input Protocol   : ");
+  Serial.println(inputProtocolName(cfg.inputProtocol));
+  Serial.print("  Pelco Response   : ");
+  Serial.println(pelcoResponseModeName(cfg.pelcoResponseMode));
   Serial.println();
   Serial.println("------------------------------------------------------------");
   Serial.println(" Options");
@@ -366,6 +397,8 @@ void SerialMenu::printRs485Menu() {
   Serial.println("  2. Set RX Pin");
   Serial.println("  3. Set TX Pin");
   Serial.println("  4. Set DE/RE Pin");
+  Serial.println("  5. Set Input Protocol");
+  Serial.println("  6. Set Pelco Response Mode");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -393,6 +426,18 @@ void SerialMenu::handleRs485Menu(const String& line) {
   } else if (line == "4") {
     Serial.print("Enter DE/RE Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_DERE_PIN;
+  } else if (line == "5") {
+    Serial.println("1. VISCA");
+    Serial.println("2. Pelco-D");
+    Serial.println("3. Pelco-P");
+    Serial.println("4. Pelco-D/P Autodetect");
+    Serial.print("> ");
+    _prompt = Prompt::RS485_INPUT_PROTOCOL_CHOICE;
+  } else if (line == "6") {
+    Serial.println("1. Respond (synthetic ACK)");
+    Serial.println("2. No response");
+    Serial.print("> ");
+    _prompt = Prompt::RS485_PELCO_RESPONSE_CHOICE;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -589,6 +634,8 @@ void SerialMenu::printDebugMenu() {
   Serial.println("  2. Debug OFF");
   Serial.println("  3. Show Last 20 Packets");
   Serial.println("  4. Live Packet Monitor");
+  Serial.println("  5. Raw Byte Monitor");
+  Serial.println("  6. Send Test Command");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -617,6 +664,19 @@ void SerialMenu::handleDebugMenu(const String& line) {
   } else if (line == "4") {
     _screen = Screen::DEBUG_LIVE;
     printDebugLiveMenu();
+  } else if (line == "5") {
+    _screen = Screen::DEBUG_RAW;
+    printDebugRawMenu();
+  } else if (line == "6") {
+    Serial.println();
+    Serial.println("Sends a Query Pan Position command (address 1) out on RS485 so you can");
+    Serial.println("check whether anything on the bus responds. Switches to Raw Byte Monitor");
+    Serial.println("right after sending so the response (if any) is visible either way, even");
+    Serial.println("if it isn't a well-formed Pelco-D/P reply.");
+    Serial.println("1. Pelco-D");
+    Serial.println("2. Pelco-P");
+    Serial.print("> ");
+    _prompt = Prompt::DEBUG_TEST_CMD_PROTOCOL_CHOICE;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -643,6 +703,31 @@ void SerialMenu::printDebugLiveMenu() {
 
 void SerialMenu::handleDebugLiveMenu(const String& line) {
   if (line.length() == 0) {
+    Serial.println("------------------------------------------------------------");
+    _screen = Screen::DEBUG;
+    printDebugMenu();
+  } else {
+    Serial.println("(still monitoring - press Enter with no input to return)");
+  }
+}
+
+// Live Packet Monitor와 달리 프로토콜 파싱/체크섬 통과 여부와 무관하게 RS485에서
+// 읽히는 모든 바이트를 그대로 hex로 보여준다. main.cpp의 loop()가 rawMonitorActive()를
+// 매 바이트/매 회전마다 확인해서 실제 echo를 수행한다 - 이 화면은 그 트리거일 뿐이다.
+void SerialMenu::printDebugRawMenu() {
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println(" 5.5 Raw Byte Monitor");
+  Serial.println("============================================================");
+  Serial.println("Streaming raw RS485 bytes below, regardless of protocol/checksum.");
+  Serial.println("Useful for diagnosing wiring/baudrate/protocol mismatches.");
+  Serial.println("Press Enter (no input) to return to Debug Mode menu.");
+  Serial.println("------------------------------------------------------------");
+}
+
+void SerialMenu::handleDebugRawMenu(const String& line) {
+  if (line.length() == 0) {
+    Serial.println();
     Serial.println("------------------------------------------------------------");
     _screen = Screen::DEBUG;
     printDebugMenu();
@@ -746,6 +831,44 @@ void SerialMenu::handlePrompt(const String& line) {
         cfg.rs485Baudrate = kBaudChoices[choice - 1];
         applyRs485Settings(cfg);
         Serial.println("Baudrate set and saved to flash.");
+      } else {
+        Serial.println("Invalid choice.");
+      }
+      printRs485Menu();
+      break;
+    }
+    case Prompt::RS485_INPUT_PROTOCOL_CHOICE: {
+      if (line == "1") {
+        cfg.inputProtocol = InputProtocol::VISCA;
+        _storage.save(cfg);
+        Serial.println("Input protocol set to VISCA and saved to flash.");
+      } else if (line == "2") {
+        cfg.inputProtocol = InputProtocol::PELCO_D;
+        _storage.save(cfg);
+        Serial.println("Input protocol set to Pelco-D and saved to flash.");
+      } else if (line == "3") {
+        cfg.inputProtocol = InputProtocol::PELCO_P;
+        _storage.save(cfg);
+        Serial.println("Input protocol set to Pelco-P and saved to flash.");
+      } else if (line == "4") {
+        cfg.inputProtocol = InputProtocol::PELCO_AUTO;
+        _storage.save(cfg);
+        Serial.println("Input protocol set to Pelco-D/P Autodetect and saved to flash.");
+      } else {
+        Serial.println("Invalid choice.");
+      }
+      printRs485Menu();
+      break;
+    }
+    case Prompt::RS485_PELCO_RESPONSE_CHOICE: {
+      if (line == "1") {
+        cfg.pelcoResponseMode = PelcoResponseMode::SYNTHETIC;
+        _storage.save(cfg);
+        Serial.println("Pelco response mode set to Respond and saved to flash.");
+      } else if (line == "2") {
+        cfg.pelcoResponseMode = PelcoResponseMode::NONE;
+        _storage.save(cfg);
+        Serial.println("Pelco response mode set to No response and saved to flash.");
       } else {
         Serial.println("Invalid choice.");
       }
@@ -888,6 +1011,50 @@ void SerialMenu::handlePrompt(const String& line) {
         Serial.println("Invalid choice.");
         printCameraDetailMenu();
       }
+      break;
+    }
+    case Prompt::FACTORY_RESET_CONFIRM: {
+      if (line == "YES") {
+        Serial.println("Factory reset confirmed. Restoring defaults and rebooting...");
+        _routing.applyDefaults();
+        applyRs485Settings(cfg);  // cfg는 _routing.get() 참조라 applyDefaults() 결과를 그대로 반영
+        Serial.flush();
+        delay(300);
+        ESP.restart();
+      } else {
+        Serial.println("Cancelled.");
+        printMainMenu();
+      }
+      break;
+    }
+    case Prompt::DEBUG_TEST_CMD_PROTOCOL_CHOICE: {
+      // Query Pan Position, address 1 고정 - Pelco-D/P 양쪽 다 응답을 정의하고 있는
+      // 조회 명령이라 "뭔가 응답이 오는지" 테스트하기에 적합하다 (doc/pelcoD_command.md
+      // 5절, doc/pelcoP_command.md 5절의 0x51/Response 0x59 참고).
+      if (line == "1") {
+        uint8_t packet[7] = {PELCO_D_START_BYTE, 0x01, 0x00, 0x51, 0x00, 0x00, 0x00};
+        uint8_t sum = 0;
+        for (uint8_t i = 1; i < 6; i++) sum += packet[i];
+        packet[6] = sum;
+        _rs485.writePacket(packet, sizeof(packet));
+        Serial.print("Sent (Pelco-D): ");
+        Serial.println(viscaBytesToHex(packet, sizeof(packet)));
+      } else if (line == "2") {
+        uint8_t packet[8] = {PELCO_P_START_BYTE, 0x01, 0x00, 0x51, 0x00, 0x00, PELCO_P_ETX_BYTE, 0x00};
+        uint8_t x = 0;
+        for (uint8_t i = 1; i < 6; i++) x ^= packet[i];
+        packet[7] = x;
+        _rs485.writePacket(packet, sizeof(packet));
+        Serial.print("Sent (Pelco-P): ");
+        Serial.println(viscaBytesToHex(packet, sizeof(packet)));
+      } else {
+        Serial.println("Invalid choice.");
+        printDebugMenu();
+        break;
+      }
+      Serial.println("Watching for a response (Raw Byte Monitor)...");
+      _screen = Screen::DEBUG_RAW;
+      printDebugRawMenu();
       break;
     }
     case Prompt::NONE:

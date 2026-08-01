@@ -5,7 +5,7 @@ namespace {
 const char* kNamespace = "visca-gw";
 const char* kBlobKey = "config";
 constexpr uint32_t kConfigMagic = 0x56494736;  // "VIG6" (bumped for the camera-slot layout)
-constexpr uint16_t kConfigVersion = 2;
+constexpr uint16_t kConfigVersion = 5;  // bumped: InputProtocol에 PELCO_P/PELCO_AUTO 추가, pelcoDResponseMode -> pelcoResponseMode로 개명
 }  // namespace
 
 bool Storage::load(SystemConfig& config) {

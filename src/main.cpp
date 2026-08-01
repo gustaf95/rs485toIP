@@ -6,6 +6,8 @@
 #include "Storage.h"
 #include "Diagnostics.h"
 #include "ViscaParser.h"
+#include "PelcoDParser.h"
+#include "PelcoPParser.h"
 #include "Rs485Port.h"
 #include "IpViscaClient.h"
 #include "SonyViscaClient.h"
@@ -19,6 +21,8 @@ Storage storage;
 Diagnostics diagnostics;
 Rs485Port rs485;
 ViscaParser viscaParser;
+PelcoDParser pelcoDParser;
+PelcoPParser pelcoPParser;
 IpViscaClient ipViscaClient;
 SonyViscaClient sonyViscaClient;
 SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, connectWifi);
@@ -28,6 +32,31 @@ bool wifiIsStation = false;
 unsigned long lastWifiRetryMs = 0;
 bool wasWifiConnected = false;
 const unsigned long kWifiRetryIntervalMs = 5000;
+
+unsigned long lastRawByteMs = 0;
+bool rawLineOpen = false;
+bool wasRawMonitorActive = false;
+
+// Raw Byte Monitor 화면이 켜져 있는 동안 RS485에서 읽은 바이트를 프로토콜 파싱과
+// 무관하게 그대로 hex로 echo한다. RAW_MONITOR_GAP_MS 이상 새 바이트가 없으면
+// pollRawMonitor()가 줄바꿈으로 끊어서 다음 버스트를 새 줄에 보여준다.
+void echoRawByte(uint8_t b) {
+  if (!rawLineOpen) {
+    Serial.print("[RAW] ");
+    rawLineOpen = true;
+  }
+  if (b < 0x10) Serial.print('0');
+  Serial.print(b, HEX);
+  Serial.print(' ');
+  lastRawByteMs = millis();
+}
+
+void pollRawMonitor() {
+  if (rawLineOpen && (millis() - lastRawByteMs) > RAW_MONITOR_GAP_MS) {
+    Serial.println();
+    rawLineOpen = false;
+  }
+}
 
 const char* protocolTag(ProtocolMode mode) {
   switch (mode) {
@@ -257,6 +286,65 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
   }
 }
 
+// Pelco-D General Response(ACK)를 합성해서 돌려준다. 체크섬은 원본 명령의 체크섬
+// 바이트를 그대로 사용한다 (ALARMS=0x00이므로 sum(원본 CKSM, 0x00) = 원본 CKSM).
+void sendPelcoDResponse(const uint8_t* data, uint8_t len) {
+  uint8_t response[4] = {PELCO_D_START_BYTE, data[1], 0x00, data[len - 1]};
+  rs485.writePacket(response, sizeof(response));
+  diagnostics.recordRs485TxResponse();
+}
+
+// Pelco-D -> VISCA 명령 변환은 아직 구현되지 않았다. 여기서는 프레이밍/체크섬
+// 검증과 General Response(ACK) 회신까지만 수행하고, 실제 라우팅/전송은 없다.
+void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
+  diagnostics.recordRs485Rx(data, len);
+  statusLed.notifyRs485Signal();
+
+  SystemConfig& cfg = routingTable.get();
+  if (cfg.debugMode) {
+    Serial.print("[PELCO-D RX] ");
+    Serial.println(viscaBytesToHex(data, len));
+    Serial.println("[ACTION] Pelco-D -> VISCA translation not implemented yet; ignored");
+  }
+
+  if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC) {
+    sendPelcoDResponse(data, len);
+    if (cfg.debugMode) {
+      Serial.println("[TX] Pelco-D General Response (ACK)");
+    }
+  }
+}
+
+// Pelco-P General Response(ACK)를 합성해서 돌려준다. FUJIFILM SX1600 스펙 기준
+// CKSM = XOR(원본 CKSM, ALARMS=0x00) = 원본 CKSM이므로, Pelco-D와 마찬가지로
+// 원본 명령의 체크섬 바이트를 그대로 재사용하면 스펙과 정확히 일치한다.
+void sendPelcoPResponse(const uint8_t* data, uint8_t len) {
+  uint8_t response[5] = {PELCO_P_START_BYTE, data[1], 0x00, PELCO_P_ETX_BYTE, data[len - 1]};
+  rs485.writePacket(response, sizeof(response));
+  diagnostics.recordRs485TxResponse();
+}
+
+// Pelco-P -> VISCA 명령 변환은 아직 구현되지 않았다. 여기서는 프레이밍/체크섬
+// 검증과 General Response(ACK) 회신까지만 수행하고, 실제 라우팅/전송은 없다.
+void handlePelcoPPacket(const uint8_t* data, uint8_t len) {
+  diagnostics.recordRs485Rx(data, len);
+  statusLed.notifyRs485Signal();
+
+  SystemConfig& cfg = routingTable.get();
+  if (cfg.debugMode) {
+    Serial.print("[PELCO-P RX] ");
+    Serial.println(viscaBytesToHex(data, len));
+    Serial.println("[ACTION] Pelco-P -> VISCA translation not implemented yet; ignored");
+  }
+
+  if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC) {
+    sendPelcoPResponse(data, len);
+    if (cfg.debugMode) {
+      Serial.println("[TX] Pelco-P General Response (ACK)");
+    }
+  }
+}
+
 // 카메라로부터의 응답을 non-blocking으로 확인하여, Response Mode가 forward나
 // forward_rewrite일 때 RS485로 전달한다.
 void pollCameraResponses() {
@@ -293,6 +381,78 @@ void pollCameraResponses() {
   }
 }
 
+void feedViscaByte(uint8_t b) {
+  ViscaParseResult result = viscaParser.feed(b);
+  switch (result) {
+    case ViscaParseResult::PACKET_READY:
+      handleViscaPacket(viscaParser.buffer(), viscaParser.length());
+      viscaParser.reset();
+      break;
+    case ViscaParseResult::MALFORMED:
+      diagnostics.recordMalformed();
+      break;
+    case ViscaParseResult::OVERFLOW_DISCARD:
+      diagnostics.recordOverflow();
+      break;
+    default:
+      break;
+  }
+}
+
+void feedPelcoDByte(uint8_t b) {
+  PelcoDParseResult result = pelcoDParser.feed(b);
+  switch (result) {
+    case PelcoDParseResult::PACKET_READY:
+      handlePelcoDPacket(pelcoDParser.buffer(), pelcoDParser.length());
+      pelcoDParser.reset();
+      break;
+    case PelcoDParseResult::CHECKSUM_ERROR:
+      diagnostics.recordMalformed();
+      break;
+    default:
+      break;
+  }
+}
+
+void feedPelcoPByte(uint8_t b) {
+  PelcoPParseResult result = pelcoPParser.feed(b);
+  switch (result) {
+    case PelcoPParseResult::PACKET_READY:
+      handlePelcoPPacket(pelcoPParser.buffer(), pelcoPParser.length());
+      pelcoPParser.reset();
+      break;
+    case PelcoPParseResult::CHECKSUM_ERROR:
+      diagnostics.recordMalformed();
+      break;
+    default:
+      break;
+  }
+}
+
+// Pelco-D/Pelco-P 자동 판별. 이미 진행 중인 프레임이 있으면 그 파서에만 계속
+// 먹인다 - 두 파서를 항상 동시에 먹이면, 진행 중인 프레임의 페이로드 바이트가
+// 우연히 상대 프로토콜의 시작 바이트와 같을 때 유휴 파서가 그 자리에서
+// 잘못 새 프레임을 시작해버리는 오탐(false start)이 생길 수 있다. 시작 바이트가
+// 겹치지 않는다는 성질(0xFF vs 0xA0, doc/pelcoD_command.md 9.3절)은 "완전히
+// 새 프레임이 시작되는 시점"에서만 안전하게 활용할 수 있다.
+void feedPelcoAutoByte(uint8_t b) {
+  if (pelcoDParser.length() > 0) {
+    feedPelcoDByte(b);
+    return;
+  }
+  if (pelcoPParser.length() > 0) {
+    feedPelcoPByte(b);
+    return;
+  }
+
+  if (b == PELCO_D_START_BYTE) {
+    feedPelcoDByte(b);
+  } else if (b == PELCO_P_START_BYTE) {
+    feedPelcoPByte(b);
+  }
+  // 둘 다 아니면 노이즈 - 두 파서 모두 시작 바이트 불일치로 이미 무시한다.
+}
+
 void setup() {
   Serial.begin(9600);  // UART0: USB Serial 메뉴/디버그 전용
   delay(200);
@@ -324,28 +484,72 @@ void loop() {
   maintainWifi();
   statusLed.update(WiFi.status() == WL_CONNECTED);
 
+  SystemConfig& cfg = routingTable.get();
+
+  bool rawMonitor = serialMenu.rawMonitorActive();
+  if (rawMonitor != wasRawMonitorActive) {
+    // 화면을 나가고 다시 들어올 때 SerialMenu 쪽이 이미 줄바꿈/헤더를 출력해
+    // 커서가 새 줄에 있으므로, rawLineOpen도 같이 초기화해 다음 echoRawByte()가
+    // "[RAW] " 라벨 없이 이어붙는 걸 막는다.
+    rawLineOpen = false;
+    wasRawMonitorActive = rawMonitor;
+  }
+
   while (rs485.available()) {
     uint8_t b = rs485.read();
-    ViscaParseResult result = viscaParser.feed(b);
 
-    switch (result) {
-      case ViscaParseResult::PACKET_READY:
-        handleViscaPacket(viscaParser.buffer(), viscaParser.length());
-        viscaParser.reset();
+    if (rawMonitor) {
+      echoRawByte(b);
+    }
+
+    switch (cfg.inputProtocol) {
+      case InputProtocol::PELCO_D:
+        feedPelcoDByte(b);
         break;
-      case ViscaParseResult::MALFORMED:
-        diagnostics.recordMalformed();
+      case InputProtocol::PELCO_P:
+        feedPelcoPByte(b);
         break;
-      case ViscaParseResult::OVERFLOW_DISCARD:
-        diagnostics.recordOverflow();
+      case InputProtocol::PELCO_AUTO:
+        feedPelcoAutoByte(b);
         break;
+      case InputProtocol::VISCA:
       default:
+        feedViscaByte(b);
         break;
     }
   }
 
-  if (viscaParser.poll() == ViscaParseResult::TIMEOUT_DISCARD) {
-    diagnostics.recordTimeout();
+  switch (cfg.inputProtocol) {
+    case InputProtocol::PELCO_D:
+      if (pelcoDParser.poll() == PelcoDParseResult::TIMEOUT_DISCARD) {
+        diagnostics.recordTimeout();
+      }
+      break;
+    case InputProtocol::PELCO_P:
+      if (pelcoPParser.poll() == PelcoPParseResult::TIMEOUT_DISCARD) {
+        diagnostics.recordTimeout();
+      }
+      break;
+    case InputProtocol::PELCO_AUTO:
+      // 자동 판별 모드에서는 둘 중 어느 쪽이 진행 중인 프레임을 갖고 있는지
+      // 몰라도 안전하다 - 유휴 파서의 poll()은 length()==0이라 항상 NONE.
+      if (pelcoDParser.poll() == PelcoDParseResult::TIMEOUT_DISCARD) {
+        diagnostics.recordTimeout();
+      }
+      if (pelcoPParser.poll() == PelcoPParseResult::TIMEOUT_DISCARD) {
+        diagnostics.recordTimeout();
+      }
+      break;
+    case InputProtocol::VISCA:
+    default:
+      if (viscaParser.poll() == ViscaParseResult::TIMEOUT_DISCARD) {
+        diagnostics.recordTimeout();
+      }
+      break;
+  }
+
+  if (rawMonitor) {
+    pollRawMonitor();
   }
 
   pollCameraResponses();

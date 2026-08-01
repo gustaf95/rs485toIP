@@ -23,6 +23,10 @@ class SerialMenu {
   void begin();
   void poll();
 
+  // main.cpp의 RS485 읽기 루프가 매 바이트마다 확인한다 - true면 파싱 결과와
+  // 무관하게 그 바이트를 hex로 그대로 echo해야 한다 (Raw Byte Monitor 화면).
+  bool rawMonitorActive() const { return _screen == Screen::DEBUG_RAW; }
+
  private:
   enum class Screen {
     MAIN,
@@ -34,7 +38,8 @@ class SerialMenu {
     CAMERA_DETAIL,
     COUNTERS,
     DEBUG,
-    DEBUG_LIVE
+    DEBUG_LIVE,
+    DEBUG_RAW
   };
   enum class Prompt {
     NONE,
@@ -48,11 +53,15 @@ class SerialMenu {
     RS485_RX_PIN,
     RS485_TX_PIN,
     RS485_DERE_PIN,
+    RS485_INPUT_PROTOCOL_CHOICE,
+    RS485_PELCO_RESPONSE_CHOICE,
     ROUTING_SELECT_CAM,
     ROUTING_SET_IP_VALUE,
     ROUTING_SET_PORT_VALUE,
     ROUTING_SET_PROTOCOL_VALUE,
-    ROUTING_SET_ADDRMODE_VALUE
+    ROUTING_SET_ADDRMODE_VALUE,
+    FACTORY_RESET_CONFIRM,
+    DEBUG_TEST_CMD_PROTOCOL_CHOICE
   };
 
   RoutingTable& _routing;
@@ -80,6 +89,7 @@ class SerialMenu {
   void handleCountersMenu(const String& line);
   void handleDebugMenu(const String& line);
   void handleDebugLiveMenu(const String& line);
+  void handleDebugRawMenu(const String& line);
   void handlePrompt(const String& line);
 
   // RS485 설정(Baudrate/RX/TX/DE-RE Pin) 변경 시 flash에 저장하고 즉시 UART를 재적용한다.
@@ -95,7 +105,10 @@ class SerialMenu {
   void printCountersMenu();
   void printDebugMenu();
   void printDebugLiveMenu();
+  void printDebugRawMenu();
 
   static String protocolName(ProtocolMode mode);
   static String addressModeName(AddressMode mode);
+  static String inputProtocolName(InputProtocol mode);
+  static String pelcoResponseModeName(PelcoResponseMode mode);
 };

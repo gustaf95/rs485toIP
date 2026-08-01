@@ -23,6 +23,35 @@ enum class ResponseMode : uint8_t {
   FORWARD_REWRITE = 3
 };
 
+// RS485로 들어오는 입력이 어느 프로토콜인지. Pelco-D/Pelco-P는 아직 프레이밍/
+// 체크섬 검증과 ACK 응답까지만 구현되어 있고, VISCA로의 명령 변환은 별도
+// 작업이다.
+//
+// PELCO_AUTO는 Pelco-D와 Pelco-P를 패킷 단위로 실시간 자동 판별한다. 이게
+// 가능한 이유는 두 프로토콜의 시작 바이트가 겹치지 않기 때문이다(Pelco-D는
+// 0xFF, Pelco-P는 0xA0). ZU-EPC7000 컨트롤러는 카메라 채널마다 프로토콜을
+// 개별 지정할 수 있어(doc/pelcoD_command.md 9.1/9.3절) 같은 RS485 버스에
+// Pelco-D와 Pelco-P가 실제로 섞여 들어올 수 있다는 게 확인되어 추가했다.
+// VISCA는 종료 바이트 0xFF가 Pelco-D의 시작 바이트와 겹쳐 안전하게 자동
+// 판별할 수 없으므로(같은 문서 참고) 이 옵션에 포함하지 않는다 - VISCA는
+// 항상 명시적으로 선택해야 한다.
+enum class InputProtocol : uint8_t {
+  VISCA = 0,
+  PELCO_D = 1,
+  PELCO_P = 2,
+  PELCO_AUTO = 3
+};
+
+// Pelco-D/Pelco-P 입력을 받았을 때 RS485로 General Response(ACK)를 돌려줄지
+// 여부. 두 프로토콜 공통 설정이다 - ZU-EPC7000 컨트롤러 매뉴얼의 "ACK MODE"
+// 설정도 Pelco-D/Pelco-P를 구분하지 않고 "PELCO 공통"으로 적용된다.
+// 기본값은 SYNTHETIC(응답함) - 컨트롤러가 응답을 기다리다 멈추는 쪽이 응답을
+// 안 보내는 쪽보다 훨씬 치명적이라, 안전한 쪽을 기본값으로 삼는다.
+enum class PelcoResponseMode : uint8_t {
+  SYNTHETIC = 0,
+  NONE = 1
+};
+
 // IPv4 address stored as raw bytes so the struct stays a flat, blob-safe
 // layout for Preferences storage (avoids depending on IPAddress internals).
 struct StoredIp {
@@ -73,6 +102,8 @@ struct SystemConfig {
   uint8_t rs485RxPin;
   uint8_t rs485TxPin;
   uint8_t rs485DeRePin;
+  InputProtocol inputProtocol;
+  PelcoResponseMode pelcoResponseMode;
 
   ResponseMode responseMode;
   bool debugMode;
