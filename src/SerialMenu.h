@@ -67,6 +67,7 @@ class SerialMenu {
   uint8_t _scanCount = 0;
 
   String _lineBuffer;
+  char _lastLineEndChar = 0;  // CRLF/LFCR 쌍의 두 번째 바이트를 중복 처리하지 않기 위한 상태
 
   void handleLine(const String& line);
   void handleMainMenu(const String& line);

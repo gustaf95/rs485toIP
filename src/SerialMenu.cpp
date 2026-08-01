@@ -66,19 +66,28 @@ void SerialMenu::begin() {
 void SerialMenu::poll() {
   while (Serial.available()) {
     char c = (char)Serial.read();
-    if (c == '\r') continue;
-    if (c == '\n') {
+    if (c == '\r' || c == '\n') {
+      // MobaXterm 등은 Enter로 '\r'만 보내고, 다른 터미널은 '\n' 또는 '\r\n'을 보낸다.
+      // 두 문자 모두 줄 종료로 인식하되, '\r\n'/'\n\r' 쌍의 두 번째 바이트는 같은
+      // Enter 입력이 중복 접수되지 않도록 건너뛴다.
+      if (_lastLineEndChar != 0 && c != _lastLineEndChar) {
+        _lastLineEndChar = 0;
+        continue;
+      }
+      _lastLineEndChar = c;
       Serial.println();
       String line = _lineBuffer;
       line.trim();
       _lineBuffer = "";
       handleLine(line);
     } else if (c == 0x08 || c == 0x7F) {  // Backspace(BS) 또는 Delete(DEL)
+      _lastLineEndChar = 0;
       if (_lineBuffer.length() > 0) {
         _lineBuffer.remove(_lineBuffer.length() - 1);
         Serial.print("\b \b");  // 커서를 뒤로, 문자를 공백으로 지우고, 다시 뒤로
       }
     } else {
+      _lastLineEndChar = 0;
       Serial.write(c);
       _lineBuffer += c;
     }
