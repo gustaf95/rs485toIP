@@ -29,16 +29,29 @@ void SerialMenu::begin() {
 }
 
 void SerialMenu::feedByte(char c) {
+  // MobaXterm 등은 Enter로 '\r'만 보내고, 다른 터미널은 '\n' 또는 '\r\n'을 보낸다.
+  // 두 문자 모두 줄 종료로 인식하되, '\r\n'/'\n\r' 쌍의 두 번째 바이트는 같은 Enter
+  // 입력이 중복 접수되지 않도록 건너뛴다. (활성화 전 게이트에도 동일하게 적용)
+  bool isLineEnd = (c == '\r' || c == '\n');
+  if (isLineEnd) {
+    if (_lastLineEndChar != 0 && c != _lastLineEndChar) {
+      _lastLineEndChar = 0;
+      return;
+    }
+    _lastLineEndChar = c;
+  } else {
+    _lastLineEndChar = 0;
+  }
+
   if (!_started) {
-    if (c == '\n') {
+    if (isLineEnd) {
       _started = true;
       printMainMenu();
     }
     return;  // 활성화 전에는 에코도, 버퍼 적재도 하지 않는다.
   }
 
-  if (c == '\r') return;
-  if (c == '\n') {
+  if (isLineEnd) {
     Serial.println();
     String line = _lineBuffer;
     line.trim();
