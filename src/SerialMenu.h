@@ -77,6 +77,7 @@ class SerialMenu {
 
   String _lineBuffer;
   char _lastLineEndChar = 0;  // CRLF/LFCR 쌍의 두 번째 바이트를 중복 처리하지 않기 위한 상태
+  bool _debugModeBeforeLive = false;  // Live Packet Monitor 진입 전 debugMode 값 - 나갈 때 복원
 
   void handleLine(const String& line);
   void handleMainMenu(const String& line);

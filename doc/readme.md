@@ -742,9 +742,12 @@ Debug Mode ON일 때는 RS485 수신과 IP 전송을 실시간으로 출력한�
 
 ### 12.5.1 Live Packet Monitor
 
-"4. Live Packet Monitor"를 선택하면 Debug Mode가 꺼져 있어도 자동으로 켜지고(flash에 저장됨),
-아래와 같은 화면으로 전환되어 RS485 <-> IP VISCA 트래픽이 실시간으로 계속 출력된다.
-아무 입력 없이 Enter만 누르면 스트리밍이 멈추고 이전 메뉴(5. Debug Mode)로 돌아간다.
+"4. Live Packet Monitor"를 선택하면 Debug Mode가 꺼져 있어도 화면을 보는 동안만 메모리
+상에서 자동으로 켜지고(flash에는 저장하지 않음), 아래와 같은 화면으로 전환되어 RS485 <->
+IP VISCA 트래픽이 실시간으로 계속 출력된다. 아무 입력 없이 Enter만 누르면 스트리밍이
+멈추고 진입 전 Debug Mode 값(ON/OFF)을 그대로 복원한 뒤 이전 메뉴(5. Debug Mode)로
+돌아간다 — 즉 Live Packet Monitor를 한 번 봤다고 재부팅 후에도 Debug Mode가 계속 켜져
+있지는 않는다.
 
 ```text
 ============================================================

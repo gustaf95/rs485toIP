@@ -687,10 +687,12 @@ void SerialMenu::handleDebugMenu(const String& line) {
 
 void SerialMenu::printDebugLiveMenu() {
   SystemConfig& cfg = _routing.get();
-  if (!cfg.debugMode) {
-    cfg.debugMode = true;
-    _storage.save(cfg);
-  }
+  // Live Packet Monitor를 보려면 debugMode가 켜져 있어야 [RX]/[TX] 로그가 찍히지만,
+  // 이건 "지금 화면을 보는 동안만" 필요한 상태다 - flash에 영구 저장하면 여길 한 번만
+  // 들어와도 재부팅 후에까지 debugMode가 계속 ON으로 남는다. 나갈 때 원래 값으로
+  // 되돌리므로 여기서는 메모리에서만 켜고 저장하지 않는다.
+  _debugModeBeforeLive = cfg.debugMode;
+  cfg.debugMode = true;
 
   Serial.println();
   Serial.println("============================================================");
@@ -704,6 +706,7 @@ void SerialMenu::printDebugLiveMenu() {
 void SerialMenu::handleDebugLiveMenu(const String& line) {
   if (line.length() == 0) {
     Serial.println("------------------------------------------------------------");
+    _routing.get().debugMode = _debugModeBeforeLive;
     _screen = Screen::DEBUG;
     printDebugMenu();
   } else {
