@@ -6,10 +6,14 @@
 개별 지정할 수 있어([`pelcoD_command.md`](pelcoD_command.md) 9.1/9.3절) 실제로 Pelco-D/Pelco-P가
 같은 RS485 버스에 섞여 들어올 수 있다는 점이 구현 계기였다.
 
-**다만 Pelco-D와 마찬가지로 VISCA로의 실제 명령 변환은 아직 구현되지 않았다** — 프레이밍/체크섬
-검증과 General Response(ACK) 회신까지만 동작하고, 유효한 패킷을 받으면 Debug Mode에
-`[PELCO-P RX]`로 로그만 남긴 채 무시한다 (`handlePelcoPPacket()`). 아래 5절의 커맨드 목록은 향후
-VISCA 변환 로직을 붙일 때의 참고 자료다.
+**구현 완료 (2026-08-02):** VISCA로의 실제 명령 변환도 Pelco-D와 공유하는
+`translatePelcoAndForward()`(`src/main.cpp`)로 구현했다. 4절의 CMND1 비트 재배치(Focus Far/Near
+위치)만 Pelco-D와 다르게 분기하고, 나머지(Pan/Tilt/Zoom 비트, Preset 옵코드)는 5절에서 확인한
+대로 Pelco-D와 완전히 동일한 값 체계를 그대로 공유한다. 주소는 7절 표의 "실제 주소 - 1"
+인코딩을 반영해 +1 보정 후 카메라 슬롯 1~7에 매핑한다 (`handlePelcoPPacket()`). Query Pan/Tilt/
+Zoom Position은 Pelco-D와 마찬가지로 아직 번역하지 않는다 — VISCA 조회는 비동기 응답(별도 UDP
+패킷)으로 오는데, 이걸 Pelco Extended Response로 재포장하는 로직이 없어서 요청만 받고 무시한다.
+아래 5절의 커맨드 목록은 이 번역 로직의 근거 자료다.
 
 FUJIFILM SX1600용 공식 Pelco-P 프로토콜 스펙(`pelco-p_protocol_specification_for_sx1600_v.1.00.0_en.pdf`)과
 실제 타겟 카메라인 FoMaKo의 자체 Pelco-P 커맨드 표(`fomako_manual.pdf` 5.5절)를 교차 참조해 정리했다.
@@ -150,9 +154,9 @@ Pelco-D와 마찬가지로 비트 플래그 방식이지만, **비트 배치가 
 | CMND1 (Focus/Iris/Camera On) | Sense bit(bit7) + bit0=Focus Near | Sense bit 없음, bit0=Focus Far/bit1=Focus Near로 재배치 |
 
 이 표가 근거가 되어 `PelcoDParser`를 재사용하지 않고 `src/PelcoPParser.h/.cpp`를 별도로 구현했다
-(시작 바이트, 프레임 길이, 체크섬 계산이 전부 다르기 때문). 다만 CMND1 비트 재배치(Focus Far/Near
-위치, 4절)는 프레이밍 레벨에서는 영향이 없고 VISCA 변환 로직을 구현할 때 반영해야 하는 부분이라,
-아직 손대지 않은 상태다 (파서는 프레이밍/체크섬 검증까지만 함).
+(시작 바이트, 프레임 길이, 체크섬 계산이 전부 다르기 때문). CMND1 비트 재배치(Focus Far/Near
+위치, 4절)는 프레이밍 레벨에서는 영향이 없지만, VISCA 변환 로직(`translatePelcoAndForward()`)의
+`isPelcoP` 분기에 반영되어 있다.
 
 ## 8. 확인이 필요한 사항
 
@@ -164,5 +168,8 @@ Pelco-D와 마찬가지로 비트 플래그 방식이지만, **비트 배치가 
 - [ ] FUJIFILM 스펙 5.1.2절의 STX 오기(`0xFF` vs `0xA0`) 관련해서, 실제 카메라들이 Receive Command의
       STX로 어떤 값을 실제로 내보내는지 — 스펙 오타인지 실제 동작 차이인지는 실측 전까지 알 수 없음.
       (게이트웨이의 `sendPelcoPResponse()`는 3절 개요 챕터의 정의를 따라 `0xA0`을 사용한다.)
-- [ ] Pelco-D와 마찬가지로 Pelco-P → VISCA 명령 변환 로직 자체가 아직 없음. 구현 시 4절의 CMND1
-      비트 재배치와 7절의 주소 인코딩(`실제 주소 - 1`) 차이를 반드시 반영해야 한다.
+- [x] ~~Pelco-D와 마찬가지로 Pelco-P → VISCA 명령 변환 로직 자체가 아직 없음.~~ **구현 완료
+      (2026-08-02)**: `translatePelcoAndForward()`가 4절의 CMND1 비트 재배치와 7절의 주소
+      인코딩(`실제 주소 - 1`) 차이를 반영해서 처리한다. Query Pan/Tilt/Zoom Position은 Pelco-D와
+      동일하게 아직 번역하지 않는다(비동기 VISCA 응답을 Pelco Extended Response로 재포장하는
+      로직이 필요 — 후속 작업).

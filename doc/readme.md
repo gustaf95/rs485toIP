@@ -368,7 +368,19 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 
 ## 11. Serial 시작 메뉴
 
-전원 투입 후 USB Serial에 다음과 같은 메뉴를 출력한다.
+전원 투입/리셋 직후에는 메뉴가 자동으로 뜨지 않는다 — 게이트웨이는 메뉴 조작 없이도
+RS485↔IP 변환을 계속 수행하므로, 콘솔을 보고 있지 않을 때 메뉴가 끼어들지 않게 하기
+위함이다. 대신 아래 안내만 한 번 출력된다.
+
+```text
+USB Serial menu idle - press Enter twice (blank line) to open the Main Menu.
+```
+
+아무것도 입력하지 않고 **Enter를 연속 두 번** 누르면 그때 Main Menu가 열린다. 중간에 뭔가
+입력하고 Enter를 치면 카운트가 리셋된다(로그성 노이즈 등으로 우연히 열리는 걸 방지). 한 번
+열리면 이후에는 평소처럼 번호를 입력해 메뉴를 탐색하면 되고, 다시 잠그려면 리셋해야 한다.
+
+메뉴가 열리면 다음과 같이 출력된다.
 
 ```text
 ============================================================
@@ -553,11 +565,23 @@ Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장�
 Pelco-D를 선택하면 `PelcoDParser`가 0xFF로 시작하는 고정 7바이트 프레임(Address, Command1,
 Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을 검증한다. Pelco-P를
 선택하면 `PelcoPParser`가 0xA0으로 시작해 0xAF로 끝나는 고정 8바이트 프레임(XOR 체크섬)을
-조립한다. 다만 두 프로토콜 모두 현재는 프레이밍/체크섬 검증까지만 구현되어 있고, VISCA로
-변환해 카메라로 전달하는 로직은 아직 구현되지 않았다 — 유효한 패킷을 받으면 카운터
-(`RS485 RX Total`)에 반영되고 Debug Mode에서 `[PELCO-D RX]`/`[PELCO-P RX]`로 로그만 남을
-뿐, 실제 카메라로는 전달되지 않는다. 체크섬(또는 Pelco-P의 경우 ETX 고정 바이트)이 맞지
-않으면 Malformed Packet 카운터가 올라간다. 커맨드 세부 사항은
+조립한다. 체크섬(또는 Pelco-P의 경우 ETX 고정 바이트)이 맞지 않으면 Malformed Packet
+카운터가 올라간다.
+
+유효한 패킷은 `translatePelcoAndForward()`가 VISCA 명령으로 변환해서 카메라로 전달한다
+(`RS485 RX Total` 카운터 반영, Debug Mode에서 `[PELCO-D RX]`/`[PELCO-P RX]` → `[PELCO-D->VISCA]`/
+`[PELCO-P->VISCA]` → `[TX]` 순서로 로그가 찍힌다). 지원 범위는 FoMaKo 카메라 자체가 Pelco-D/P로
+지원하는 명령에 맞춰져 있다:
+
+- **번역됨**: Pan/Tilt 이동(대각선 포함), Stop(Pan/Tilt+Zoom+Focus 동시 정지), Zoom Tele/Wide,
+  Focus Near/Far, Preset Set/Goto/Clear.
+- **아직 번역 안 됨**: Query Pan/Tilt/Zoom Position(VISCA 쪽 비동기 응답을 Pelco Extended
+  Response로 재포장하는 로직이 필요해 후속 작업으로 남겨둠), 그리고 FoMaKo 자체가 Pelco-D/P로
+  지원하지 않는 Run Group/Swing·Aux·절대좌표 Set·Focus Position Query는 애초에 구현 대상이
+  아님 — 이런 패킷은 조용히 무시된다(Address가 카메라 슬롯 1~7 밖이어도 마찬가지).
+
+Pan/Tilt 속도(DATA1/DATA2)는 실측 전까지 Pelco-D 표준 관례인 0x00~0x3F 범위를 가정해 VISCA
+속도로 선형 환산한다(`scalePelcoSpeedToVisca()`). 커맨드 세부 사항과 번역 근거는
 [pelcoD_command.md](pelcoD_command.md) / [pelcoP_command.md](pelcoP_command.md) 참고.
 
 "Pelco-D/P Autodetect"는 패킷 단위로 시작 바이트(Pelco-D는 0xFF, Pelco-P는 0xA0)를 보고

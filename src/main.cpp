@@ -286,6 +286,174 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
   }
 }
 
+// Pelco-D DATA1/DATA2 속도 값을 VISCA VV/WW로 환산한다. 실측 전까지의 임시 정책 -
+// Pelco-D 표준 관례인 0x00~0x3F(6bit) 입력 범위를 가정하고 선형 비례식으로 환산한다
+// (doc/pelcoD_command.md 11절 "Pan/Tilt Speed 실제 값 범위" 항목 참고). 실측치가
+// 다르면 이 함수만 교체하면 된다.
+uint8_t scalePelcoSpeedToVisca(uint8_t pelcoSpeed, uint8_t viscaMax) {
+  const uint8_t kPelcoSpeedMax = 0x3F;
+  uint16_t scaled = ((uint16_t)pelcoSpeed * viscaMax + kPelcoSpeedMax / 2) / kPelcoSpeedMax;
+  if (scaled < 1) scaled = 1;
+  if (scaled > viscaMax) scaled = viscaMax;
+  return (uint8_t)scaled;
+}
+
+// Pelco-D/P에서 번역된 VISCA 명령 하나를 카메라로 전달한다. handleViscaPacket()과
+// 다르게 RS485로 VISCA용 합성 ACK/Completion을 돌려보내지 않는다 - Pelco 쪽 ACK은
+// sendPelcoDResponse()/sendPelcoPResponse()가 이미 Pelco 포맷으로 담당하고 있어서,
+// 여기서 VISCA 포맷 응답까지 또 보내면 Pelco 컨트롤러 입장에서는 알아볼 수 없는
+// 바이트가 섞여 들어가게 된다.
+void forwardTranslatedVisca(uint8_t camNumber, uint8_t* viscaBuf, uint8_t viscaLen,
+                             const char* debugTag) {
+  SystemConfig& cfg = routingTable.get();
+  viscaBuf[0] = VISCA_ADDR_CAM1 + (camNumber - 1);
+
+  RoutedPacket results[1];
+  uint8_t count = routingTable.route(viscaBuf, viscaLen, results, 1);
+
+  if (count == 0) {
+    diagnostics.recordIgnoredNoIp(viscaBuf, viscaLen);
+    if (cfg.debugMode) {
+      Serial.print("[ROUTE] CAM");
+      Serial.print(camNumber);
+      Serial.println(" -> No IP configured");
+      Serial.println("[ACTION] Ignored");
+    }
+    return;
+  }
+
+  CameraSlot& slot = *results[0].slot;
+  IPAddress ip = slot.ip.toIPAddress();
+  String target = ip.toString() + ":" + String(slot.port);
+
+  if (cfg.debugMode) {
+    Serial.print("[");
+    Serial.print(debugTag);
+    Serial.print("->VISCA] ");
+    Serial.println(viscaBytesToHex(results[0].output, results[0].outputLen));
+    Serial.print("[ROUTE] CAM");
+    Serial.print(camNumber);
+    Serial.print(" -> ");
+    Serial.println(target);
+  }
+
+  bool ok = sendToCamera(slot, results[0].output, results[0].outputLen);
+  diagnostics.recordForwarded(results[0].output, results[0].outputLen, target);
+
+  if (ok) {
+    diagnostics.recordIpTxSuccess();
+    if (cfg.debugMode) {
+      Serial.print("[TX] ");
+      Serial.print(protocolTag(slot.protocol));
+      Serial.print(" ");
+      Serial.print(target);
+      Serial.print(" | ");
+      Serial.println(viscaBytesToHex(results[0].output, results[0].outputLen));
+    }
+  } else {
+    diagnostics.recordIpTxFailed();
+    if (cfg.debugMode) {
+      Serial.print("[ERROR] IP TX Failed -> ");
+      Serial.println(target);
+    }
+  }
+}
+
+// Pelco-D/P Standard/Extended Command를 VISCA 명령으로 변환해서 보낸다.
+// isPelcoP로 CMND1 비트 배치 차이(Focus Near/Far 위치, doc/pelcoP_command.md 4절)만
+// 분기하고, 나머지(Pan/Tilt/Zoom 비트, Preset/Query 옵코드)는 두 프로토콜이 동일한
+// 값 체계를 쓰므로 공유한다 (doc/pelcoP_command.md 5절 "CMND2 값이 Pelco-D 표와
+// 완전히 동일" 참고). doc/pelcoD_command.md 7.1절에서 FoMaKo 자체 지원이 확인된
+// 범위만 구현한다 - Run Group/Swing, Aux, 절대좌표 Set, Focus Position Query는
+// FoMaKo Pelco-D/P 표 자체에 없어서 애초에 구현 대상이 아니다 (같은 문서 10절).
+void translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, uint8_t data1,
+                               uint8_t data2, bool isPelcoP, const char* debugTag) {
+  // Extended Command(Preset/Query)는 CMND1=0x00 + CMND2가 아래 고정 옵코드값(전부
+  // 홀수)일 때만 성립한다. Standard Command 비트 플래그는 CMND2 bit0이 항상 0으로
+  // 정의되어 있어(4절) 짝수이므로, 홀수 옵코드와 절대 겹치지 않는다.
+  if (cmnd1 == 0x00) {
+    if (cmnd2 == 0x03 || cmnd2 == 0x05 || cmnd2 == 0x07) {
+      uint8_t opcode = (cmnd2 == 0x03) ? 0x01 : (cmnd2 == 0x07) ? 0x02 : 0x00;
+      uint8_t buf[7] = {0, 0x01, 0x04, 0x3F, opcode, data2, VISCA_TERMINATOR};
+      forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+      return;
+    }
+    if (cmnd2 == 0x51 || cmnd2 == 0x53 || cmnd2 == 0x55) {
+      // Query Pan/Tilt/Zoom Position: VISCA 조회는 비동기 응답(별도 UDP 패킷)이 와야
+      // 완성되는데, 그걸 Pelco Extended Response로 재포장하는 로직은 아직 없다.
+      // 요청만 받고 조용히 무시한다 (향후 작업, doc/pelcoD_command.md 10절 참고).
+      return;
+    }
+  }
+
+  // Stop: 전부 0. 특정 축만 지정할 방법이 없는 패킷이라, Pan/Tilt/Zoom/Focus를
+  // 한꺼번에 멈춘다 - FoMaKo 자체 Pelco-D 표에도 Stop이 축 구분 없는 단일 명령으로
+  // 정의되어 있어 이 방식이 실제 동작과 일치한다 (doc/pelcoD_command.md 11절).
+  if (cmnd1 == 0x00 && cmnd2 == 0x00) {
+    uint8_t stopPT[9] = {0, 0x01, 0x06, 0x01, 0x01, 0x01, 0x03, 0x03, VISCA_TERMINATOR};
+    uint8_t stopZoom[6] = {0, 0x01, 0x04, 0x07, 0x00, VISCA_TERMINATOR};
+    uint8_t stopFocus[6] = {0, 0x01, 0x04, 0x08, 0x00, VISCA_TERMINATOR};
+    forwardTranslatedVisca(camNumber, stopPT, sizeof(stopPT), debugTag);
+    forwardTranslatedVisca(camNumber, stopZoom, sizeof(stopZoom), debugTag);
+    forwardTranslatedVisca(camNumber, stopFocus, sizeof(stopFocus), debugTag);
+    return;
+  }
+
+  bool up = cmnd2 & 0x08, down = cmnd2 & 0x10, left = cmnd2 & 0x04, right = cmnd2 & 0x02;
+  bool zoomTele = cmnd2 & 0x20, zoomWide = cmnd2 & 0x40;
+  bool focusNear, focusFar;
+  if (isPelcoP) {
+    focusFar = cmnd1 & 0x01;
+    focusNear = cmnd1 & 0x02;
+  } else {
+    focusNear = cmnd1 & 0x01;
+    focusFar = cmnd2 & 0x80;
+  }
+
+  if (up || down || left || right) {
+    uint8_t vv = scalePelcoSpeedToVisca(data1, 0x18);
+    uint8_t ww = scalePelcoSpeedToVisca(data2, 0x14);
+    uint8_t p3, p4;
+    if (up && left) {
+      p3 = 0x01;
+      p4 = 0x01;
+    } else if (up && right) {
+      p3 = 0x02;
+      p4 = 0x01;
+    } else if (down && left) {
+      p3 = 0x01;
+      p4 = 0x02;
+    } else if (down && right) {
+      p3 = 0x02;
+      p4 = 0x02;
+    } else if (up) {
+      p3 = 0x03;
+      p4 = 0x01;
+    } else if (down) {
+      p3 = 0x03;
+      p4 = 0x02;
+    } else if (left) {
+      p3 = 0x01;
+      p4 = 0x03;
+    } else {
+      p3 = 0x02;
+      p4 = 0x03;  // right
+    }
+    uint8_t buf[9] = {0, 0x01, 0x06, 0x01, vv, ww, p3, p4, VISCA_TERMINATOR};
+    forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+  }
+
+  if (zoomTele || zoomWide) {
+    uint8_t buf[6] = {0, 0x01, 0x04, 0x07, (uint8_t)(zoomTele ? 0x02 : 0x03), VISCA_TERMINATOR};
+    forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+  }
+
+  if (focusNear || focusFar) {
+    uint8_t buf[6] = {0, 0x01, 0x04, 0x08, (uint8_t)(focusFar ? 0x02 : 0x03), VISCA_TERMINATOR};
+    forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+  }
+}
+
 // Pelco-D General Response(ACK)를 합성해서 돌려준다. 체크섬은 원본 명령의 체크섬
 // 바이트를 그대로 사용한다 (ALARMS=0x00이므로 sum(원본 CKSM, 0x00) = 원본 CKSM).
 void sendPelcoDResponse(const uint8_t* data, uint8_t len) {
@@ -294,8 +462,6 @@ void sendPelcoDResponse(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485TxResponse();
 }
 
-// Pelco-D -> VISCA 명령 변환은 아직 구현되지 않았다. 여기서는 프레이밍/체크섬
-// 검증과 General Response(ACK) 회신까지만 수행하고, 실제 라우팅/전송은 없다.
 void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485Rx(data, len);
   statusLed.notifyRs485Signal();
@@ -304,7 +470,6 @@ void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
   if (cfg.debugMode) {
     Serial.print("[PELCO-D RX] ");
     Serial.println(viscaBytesToHex(data, len));
-    Serial.println("[ACTION] Pelco-D -> VISCA translation not implemented yet; ignored");
   }
 
   if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC) {
@@ -313,6 +478,18 @@ void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
       Serial.println("[TX] Pelco-D General Response (ACK)");
     }
   }
+
+  // Pelco-D ADDR은 실제 주소를 그대로 쓴다 (doc/pelcoD_command.md 2절) - 카메라
+  // 슬롯 1~7 밖(8 이상, 0)은 이 프로젝트의 매핑 대상이 아니라 무시한다 (8.2절).
+  uint8_t camNumber = data[1];
+  if (camNumber < 1 || camNumber > CAMERA_SLOT_COUNT) {
+    if (cfg.debugMode) {
+      Serial.println("[ACTION] Address out of range (1-7) - ignored");
+    }
+    return;
+  }
+  translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5], /*isPelcoP=*/false,
+                            "PELCO-D");
 }
 
 // Pelco-P General Response(ACK)를 합성해서 돌려준다. FUJIFILM SX1600 스펙 기준
@@ -324,8 +501,6 @@ void sendPelcoPResponse(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485TxResponse();
 }
 
-// Pelco-P -> VISCA 명령 변환은 아직 구현되지 않았다. 여기서는 프레이밍/체크섬
-// 검증과 General Response(ACK) 회신까지만 수행하고, 실제 라우팅/전송은 없다.
 void handlePelcoPPacket(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485Rx(data, len);
   statusLed.notifyRs485Signal();
@@ -334,7 +509,6 @@ void handlePelcoPPacket(const uint8_t* data, uint8_t len) {
   if (cfg.debugMode) {
     Serial.print("[PELCO-P RX] ");
     Serial.println(viscaBytesToHex(data, len));
-    Serial.println("[ACTION] Pelco-P -> VISCA translation not implemented yet; ignored");
   }
 
   if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC) {
@@ -343,6 +517,21 @@ void handlePelcoPPacket(const uint8_t* data, uint8_t len) {
       Serial.println("[TX] Pelco-P General Response (ACK)");
     }
   }
+
+  // Pelco-P ADDR은 "실제 주소 - 1"을 wire에 싣는다 (doc/pelcoP_command.md 1/7절,
+  // FUJIFILM SX1600 스펙 "ONE MINUS THE ADDRESS SET BY THE DEVICE") - Pelco-D와
+  // 달리 +1 보정이 필요하다. data[1]==254/255처럼 비정상적으로 큰 값이 와도
+  // camNumber가 8 이상(또는 0, uint8_t 오버플로우 시)이 되어 아래 범위 검사에서
+  // 자연스럽게 걸러진다.
+  uint8_t camNumber = data[1] + 1;
+  if (camNumber < 1 || camNumber > CAMERA_SLOT_COUNT) {
+    if (cfg.debugMode) {
+      Serial.println("[ACTION] Address out of range (1-7) - ignored");
+    }
+    return;
+  }
+  translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5], /*isPelcoP=*/true,
+                            "PELCO-P");
 }
 
 // 카메라로부터의 응답을 non-blocking으로 확인하여, Response Mode가 forward나

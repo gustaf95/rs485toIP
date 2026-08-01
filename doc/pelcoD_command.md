@@ -341,8 +341,8 @@ Pelco-D Set/Goto/Clear Preset은 지금까지 다룬 것 중 가장 단순하게
 
 - 둘 다 Preset ID / Memory Number가 **단일 바이트**(pq = 0~254)라서 변환 로직이 가장 단순함.
 - 의미상으로도 정확히 대응: 둘 다 "현재 Pan/Tilt/Zoom/Focus 상태를 번호 슬롯에 저장/불러오기/삭제".
-- FoMaKo 자체가 Set/Goto/Clear Preset을 전부 지원함을 7.1절에서 확인했다 — 세 명령 모두 안심하고
-  구현 대상에 넣을 수 있다.
+- FoMaKo 자체가 Set/Goto/Clear Preset을 전부 지원함을 7.1절에서 확인했다 — 세 명령 모두
+  `translatePelcoAndForward()`에 구현 완료.
 
 ### 다른 기능들과 비교 (FoMaKo 자체 지원 여부 반영)
 
@@ -357,11 +357,28 @@ Pelco-D Set/Goto/Clear Preset은 지금까지 다룬 것 중 가장 단순하게
 | Aux On/Off | 불가 — VISCA에 대응 명령 없음 | ❌ FoMaKo Pelco-D 표에도 없음 (이중으로 불가) |
 | Initialize Pan/Tilt | VISCA `CAM_SettingReset` 정도로 대체 가능하나 의미가 다름 | ❌ FoMaKo Pelco-D 표에 없음 |
 
-**우선순위 결론:** 이동(대각선 포함)/Stop/Preset Set·Goto·Clear/절대좌표 Query — 이 7종은 FoMaKo가
-Pelco-D 자체로 지원하고 VISCA 매핑도 명확하므로 최우선 구현 대상이다. 절대좌표 Set과 Focus Position
-Query/Response는 Pelco-D 입력만으로는 FoMaKo가 못 받는 명령이라, ZU-EPC7000이 실제로 이 바이트를
-보내는지부터 실측 확인이 필요하다 (11절에 반영). Run Group/Swing/Aux/Initialize는 양쪽 모두 근거가
-없어 구현 대상에서 제외한다.
+**우선순위 결론 → 구현 완료 (2026-08-02):** 이동(대각선 포함)/Stop/Preset Set·Goto·Clear — 이
+6종은 FoMaKo가 Pelco-D 자체로 지원하고 VISCA 매핑도 명확해서 `src/main.cpp`의
+`translatePelcoAndForward()`로 구현했다. 절대좌표 Query(Pan/Tilt/Zoom Position)는 VISCA 쪽
+조회가 비동기 응답(별도 UDP 패킷)으로 오는 구조라 Pelco Extended Response로 재포장하는 로직이
+추가로 필요해서 이번 구현에는 포함하지 않았다 — 요청을 받으면 조용히 무시한다(후속 작업).
+절대좌표 Set과 Focus Position Query/Response는 Pelco-D 입력만으로는 FoMaKo가 못 받는 명령이라,
+ZU-EPC7000이 실제로 이 바이트를 보내는지부터 실측 확인이 필요하다 (11절에 반영). Run
+Group/Swing/Aux/Initialize는 양쪽 모두 근거가 없어 구현 대상에서 제외했다.
+
+번역 로직 요약(`src/main.cpp`):
+- CMND1==0x00 && CMND2가 `0x03`/`0x05`/`0x07`(Preset Set/Clear/Goto)인 경우를 먼저 확인한다 —
+  Standard Command 비트 플래그는 CMND2 bit0이 항상 0으로 정의되어 있어 이 홀수 옵코드들과
+  절대 겹치지 않는다(4절).
+- CMND1==0x00 && CMND2==0x00이면 Stop — VISCA Pan/Tilt Stop + Zoom Stop + Focus Stop 3개를
+  전부 보낸다.
+- 그 외에는 Standard Command 비트 플래그로 해석해 Pan/Tilt(대각선 조합 포함)/Zoom/Focus를
+  각각 독립적으로 판단하고, 동시에 여러 축이 세팅돼 있으면 VISCA 명령을 여러 개 보낸다(예:
+  이동+줌이 한 패킷에 같이 온 경우).
+- Pan/Tilt 속도(DATA1/DATA2)는 `scalePelcoSpeedToVisca()`가 0x00~0x3F 가정으로 VV(0x01~0x18)/
+  WW(0x01~0x14)로 환산한다 — 11절의 "우선 처리" 정책을 그대로 코드화한 것.
+- Pelco-D는 ADDR을 그대로 카메라 번호로 쓰고, Pelco-P는 ADDR이 "실제 주소 - 1"이라 +1 보정
+  후 사용한다(`pelcoP_command.md` 1/7절). 두 경우 다 카메라 슬롯 1~7 밖이면 무시한다.
 
 ## 11. 확인이 필요한 사항 (실측 전까지 보류)
 

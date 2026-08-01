@@ -79,6 +79,11 @@ class SerialMenu {
   char _lastLineEndChar = 0;  // CRLF/LFCR 쌍의 두 번째 바이트를 중복 처리하지 않기 위한 상태
   bool _debugModeBeforeLive = false;  // Live Packet Monitor 진입 전 debugMode 값 - 나갈 때 복원
 
+  // 부팅/리셋 직후에는 메뉴가 잠겨 있다 - 빈 줄로 Enter를 연속 두 번 눌러야 열린다.
+  // 리셋할 때마다 자동으로 Main Menu가 튀어나오지 않게 하기 위함.
+  bool _menuActive = false;
+  uint8_t _wakeupEnterCount = 0;
+
   void handleLine(const String& line);
   void handleMainMenu(const String& line);
   void handleNetworkMenu(const String& line);

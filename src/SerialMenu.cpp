@@ -78,7 +78,8 @@ String SerialMenu::pelcoResponseModeName(PelcoResponseMode mode) {
 }
 
 void SerialMenu::begin() {
-  printMainMenu();
+  Serial.println();
+  Serial.println("USB Serial menu idle - press Enter twice (blank line) to open the Main Menu.");
 }
 
 void SerialMenu::poll() {
@@ -97,6 +98,24 @@ void SerialMenu::poll() {
       String line = _lineBuffer;
       line.trim();
       _lineBuffer = "";
+
+      if (!_menuActive) {
+        // 메뉴가 잠긴 상태 - 아무것도 안 치고 Enter만 두 번 연속 눌러야 열린다.
+        // 뭔가 타이핑하고 Enter를 치면(라인이 비어있지 않으면) 카운트를 리셋한다 -
+        // 노이즈나 의도치 않은 입력으로 메뉴가 갑자기 열리는 걸 막기 위함.
+        if (line.length() == 0) {
+          _wakeupEnterCount++;
+          if (_wakeupEnterCount >= 2) {
+            _menuActive = true;
+            _wakeupEnterCount = 0;
+            printMainMenu();
+          }
+        } else {
+          _wakeupEnterCount = 0;
+        }
+        continue;
+      }
+
       handleLine(line);
     } else if (c == 0x08 || c == 0x7F) {  // Backspace(BS) 또는 Delete(DEL)
       _lastLineEndChar = 0;
