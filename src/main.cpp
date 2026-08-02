@@ -28,9 +28,9 @@ PelcoPParser pelcoPParser;
 IpViscaClient ipViscaClient;
 SonyViscaClient sonyViscaClient;
 RawBridgeClient rawBridgeClient;
-SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, connectWifi);
-WebConfigServer webConfigServer(routingTable, storage, diagnostics, rs485, connectWifi);
 StatusLed statusLed;
+SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, statusLed, connectWifi);
+WebConfigServer webConfigServer(routingTable, storage, diagnostics, rs485, statusLed, connectWifi);
 
 bool wifiIsStation = false;
 unsigned long lastWifiRetryMs = 0;
@@ -344,7 +344,7 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
   }
 
   if ((isPanTiltStop(data, len) || isZoomStop(data, len)) && wifiIsStation &&
-      WiFi.status() != WL_CONNECTED) {
+      WiFi.status() != WL_CONNECTED && !cfg.rs485Uart0Shared) {
     Serial.println("WARNING: Stop command received while WiFi is disconnected - may be lost");
   }
 
@@ -791,21 +791,29 @@ void feedPelcoAutoByte(uint8_t b) {
 }
 
 void setup() {
-  Serial.begin(9600);  // UART0: USB Serial 메뉴/디버그 전용
-  delay(200);
-  // 부팅 배너를 일부러 찍지 않는다 - 리셋 직후 Serial 메뉴가 잠금 해제(Enter 두 번)
-  // 되기 전까지는 어떤 메시지도 안 보내는 게 의도다. connectWifi()/maintainWifi()도
-  // 같은 이유로 메시지를 serialMenu.menuActive()로 게이팅한다.
-
   routingTable.applyDefaults();
   if (!storage.load(routingTable.get())) {
     storage.save(routingTable.get());
   }
-  diagnostics.begin();
-  statusLed.begin(STATUS_LED_PIN);
-
   SystemConfig& cfg = routingTable.get();
-  rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin);
+
+  // RS485가 UART0을 공유하는 보드에서는 rs485.begin()이 유일하게 Serial을 시작하는
+  // 주체다 - 여기서 따로 Serial.begin()을 부르면 이미 시작된 UART0을 다른 핀/설정으로
+  // 다시 초기화하게 되어 충돌한다. 이 모드에서는 부팅 배너도 찍지 않는다 (Serial이
+  // 콘솔이 아니라 RS485 데이터 라인이므로).
+  if (!cfg.rs485Uart0Shared) {
+    Serial.begin(9600);  // UART0: USB Serial 메뉴/디버그 전용
+    delay(200);
+    // 부팅 배너를 일부러 찍지 않는다 - 리셋 직후 Serial 메뉴가 잠금 해제(Enter 두 번)
+    // 되기 전까지는 어떤 메시지도 안 보내는 게 의도다. connectWifi()/maintainWifi()도
+    // 같은 이유로 메시지를 serialMenu.menuActive()로 게이팅한다.
+  }
+
+  diagnostics.begin();
+  statusLed.begin(cfg.statusLedPin);
+
+  rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
+              cfg.rs485Uart0Shared);
 
   connectWifi();
 

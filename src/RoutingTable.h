@@ -121,6 +121,12 @@ struct SystemConfig {
   uint8_t rs485RxPin;
   uint8_t rs485TxPin;
   uint8_t rs485DeRePin;
+  // true면 RS485가 UART0(Serial)를 공유한다 - RX/TX/DE-RE가 config.h의
+  // RS485_UART0_SHARED_* 값으로 고정되고, Serial 메뉴와 Serial 기반 디버그 로깅이
+  // 비활성화된다 (SerialMenu::poll(), main.cpp의 debugMode 게이팅 참고). 이 모드에서는
+  // Web Config Server가 유일한 설정 UI다.
+  bool rs485Uart0Shared;
+  uint8_t statusLedPin;
   InputProtocol inputProtocol;
   PelcoResponseMode pelcoResponseMode;
 

@@ -5,6 +5,7 @@
 #include "Storage.h"
 #include "Diagnostics.h"
 #include "Rs485Port.h"
+#include "StatusLed.h"
 
 // USB Serial(UART0) 기반 설정/진단 메뉴. poll()은 loop()에서 매 회전마다 호출되어야
 // 하며, 한 줄 입력이 완성되기 전까지는 즉시 반환하므로 RS485 수신/IP 전송을 막지 않는다.
@@ -13,11 +14,12 @@ class SerialMenu {
   using WifiRetryFn = void (*)();
 
   SerialMenu(RoutingTable& routing, Storage& storage, Diagnostics& diagnostics, Rs485Port& rs485,
-             WifiRetryFn wifiRetry)
+             StatusLed& statusLed, WifiRetryFn wifiRetry)
       : _routing(routing),
         _storage(storage),
         _diagnostics(diagnostics),
         _rs485(rs485),
+        _statusLed(statusLed),
         _wifiRetry(wifiRetry) {}
 
   void begin();
@@ -63,6 +65,8 @@ class SerialMenu {
     RS485_DERE_PIN,
     RS485_INPUT_PROTOCOL_CHOICE,
     RS485_PELCO_RESPONSE_CHOICE,
+    RS485_UART0_SHARED_CONFIRM,
+    RS485_STATUS_LED_PIN,
     ROUTING_SELECT_CAM,
     ROUTING_SET_IP_VALUE,
     ROUTING_SET_PORT_VALUE,
@@ -76,6 +80,7 @@ class SerialMenu {
   Storage& _storage;
   Diagnostics& _diagnostics;
   Rs485Port& _rs485;
+  StatusLed& _statusLed;
   WifiRetryFn _wifiRetry;
 
   Screen _screen = Screen::MAIN;

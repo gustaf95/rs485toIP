@@ -8,8 +8,18 @@
 #define RS485_DE_RE_PIN_DEFAULT 27
 #define RS485_BAUD_DEFAULT 9600
 
+// ---- RS485 / UART0 Shared Mode ----
+// 일부 보드 리비전은 RS485 트랜시버가 UART0(RX0/TX0)에 물리적으로 고정 결선되어
+// 있어 USB 콘솔과 Serial을 공유한다. 이 모드에서는 RX/TX/DE-RE 핀이 모두 이 값으로
+// 고정되며 사용자가 바꿀 수 없다 (GatewayActions::setRs485Uart0SharedMode() 참고).
+#define RS485_UART0_SHARED_RX_PIN 3   // RX0
+#define RS485_UART0_SHARED_TX_PIN 1   // TX0
+#define RS485_UART0_SHARED_DE_RE_PIN 17
+
 // ---- Status LED ----
-#define STATUS_LED_PIN 13
+// RS485 Settings 화면(Serial/Web)에서 런타임에 바꿀 수 있다 - 이 값은 초기 기본값일
+// 뿐이다 (RoutingTable::applyDefaults() 참고).
+#define STATUS_LED_PIN_DEFAULT 13
 
 // ---- VISCA framing ----
 #define VISCA_BUFFER_SIZE 128

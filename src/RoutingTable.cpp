@@ -19,6 +19,8 @@ void RoutingTable::applyDefaults() {
   _config.rs485RxPin = RS485_RX_PIN_DEFAULT;
   _config.rs485TxPin = RS485_TX_PIN_DEFAULT;
   _config.rs485DeRePin = RS485_DE_RE_PIN_DEFAULT;
+  _config.rs485Uart0Shared = false;
+  _config.statusLedPin = STATUS_LED_PIN_DEFAULT;
   _config.inputProtocol = InputProtocol::PELCO_D;
   _config.pelcoResponseMode = PelcoResponseMode::SYNTHETIC;
 

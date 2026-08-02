@@ -18,5 +18,12 @@ bool isStrappingGpio(uint8_t pin);
 
 // pin이 RS485 RX/TX/DE-RE로 쓰기에 유효하면 true를 반환한다. 유효하지 않으면
 // false를 반환하고 *errorOut에 이유를 채운다. requireOutput은 TX/DE-RE처럼
-// 출력이 필요한 핀인지 여부(RX 검사 시에는 false로 호출).
-bool validateRs485Pin(int pin, bool requireOutput, String* errorOut);
+// 출력이 필요한 핀인지 여부(RX 검사 시에는 false로 호출). statusLedPin은 현재
+// 설정된 상태 LED 핀(cfg.statusLedPin) - 서로 겹치지 않게 막기 위해 필요하다.
+bool validateRs485Pin(int pin, bool requireOutput, uint8_t statusLedPin, String* errorOut);
+
+// pin이 상태 LED로 쓰기에 유효하면 true를 반환한다. 상태 LED는 항상 출력이라
+// requireOutput 인자가 없다. rs485RxPin/TxPin/DeRePin은 현재 RS485 설정 - 서로
+// 겹치지 않게 막기 위해 필요하다.
+bool validateStatusLedPin(int pin, uint8_t rs485RxPin, uint8_t rs485TxPin, uint8_t rs485DeRePin,
+                           String* errorOut);

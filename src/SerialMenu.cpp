@@ -51,6 +51,11 @@ String SerialMenu::pelcoResponseModeName(PelcoResponseMode mode) {
 void SerialMenu::begin() {}
 
 void SerialMenu::poll() {
+  // RS485가 UART0을 공유하는 중이면 Serial은 더 이상 콘솔이 아니라 RS485 데이터
+  // 라인이다 - 사용자 키 입력과 RS485 트래픽을 바이트 단위로 구분할 방법이 없으므로
+  // 아예 읽지 않는다. 이 모드에서 설정을 바꾸려면 Web Config Server를 써야 한다.
+  if (_routing.get().rs485Uart0Shared) return;
+
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\r' || c == '\n') {
@@ -216,6 +221,8 @@ void SerialMenu::printNetworkMenu() {
   Serial.print("  Subnet           : ");
   Serial.println(cfg.wifi.subnet.toIPAddress().toString());
   Serial.println();
+  Serial.println("  (Status LED pin is configured under RS485 Settings.)");
+  Serial.println();
   Serial.println("------------------------------------------------------------");
   Serial.println(" Options");
   Serial.println("------------------------------------------------------------");
@@ -375,13 +382,17 @@ void SerialMenu::printRs485Menu() {
   Serial.println(" 2. RS485 Settings");
   Serial.println("============================================================");
   Serial.println();
-  Serial.println("  UART Port        : UART2 / Serial2");
+  Serial.print("  UART Port        : ");
+  Serial.println(cfg.rs485Uart0Shared ? "UART0 (shared with USB console)" : "UART2 / Serial2");
   Serial.print("  RX Pin           : GPIO");
-  Serial.println(cfg.rs485RxPin);
+  Serial.print(cfg.rs485RxPin);
+  Serial.println(cfg.rs485Uart0Shared ? " (fixed)" : "");
   Serial.print("  TX Pin           : GPIO");
-  Serial.println(cfg.rs485TxPin);
+  Serial.print(cfg.rs485TxPin);
+  Serial.println(cfg.rs485Uart0Shared ? " (fixed)" : "");
   Serial.print("  DE/RE Pin        : GPIO");
-  Serial.println(cfg.rs485DeRePin);
+  Serial.print(cfg.rs485DeRePin);
+  Serial.println(cfg.rs485Uart0Shared ? " (fixed)" : "");
   Serial.print("  Baudrate         : ");
   Serial.println(cfg.rs485Baudrate);
   Serial.println("  Format           : 8N1");
@@ -390,26 +401,38 @@ void SerialMenu::printRs485Menu() {
   Serial.println(inputProtocolName(cfg.inputProtocol));
   Serial.print("  Pelco Response   : ");
   Serial.println(pelcoResponseModeName(cfg.pelcoResponseMode));
+  Serial.print("  Status LED Pin   : GPIO");
+  Serial.println(cfg.statusLedPin);
   Serial.println();
   Serial.println("------------------------------------------------------------");
   Serial.println(" Options");
   Serial.println("------------------------------------------------------------");
   Serial.println("  1. Set Baudrate");
-  Serial.println("  2. Set RX Pin");
-  Serial.println("  3. Set TX Pin");
-  Serial.println("  4. Set DE/RE Pin");
+  if (!cfg.rs485Uart0Shared) {
+    Serial.println("  2. Set RX Pin");
+    Serial.println("  3. Set TX Pin");
+    Serial.println("  4. Set DE/RE Pin");
+  }
   Serial.println("  5. Set Input Protocol");
   Serial.println("  6. Set Pelco Response Mode");
+  if (cfg.rs485Uart0Shared) {
+    Serial.println("  7. Switch back to UART2 (independent RS485 port)");
+  } else {
+    Serial.println("  7. Switch to UART0 Shared Mode (board wires RS485 onto RX0/TX0)");
+  }
+  Serial.println("  8. Set Status LED Pin");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
 
 void SerialMenu::applyRs485Settings(const SystemConfig& cfg) {
   _storage.save(cfg);
-  _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin);
+  _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
+               cfg.rs485Uart0Shared);
 }
 
 void SerialMenu::handleRs485Menu(const String& line) {
+  SystemConfig& cfg = _routing.get();
   if (line == "1") {
     Serial.println("1. 2400");
     Serial.println("2. 4800");
@@ -418,13 +441,13 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.println("5. 115200");
     Serial.print("> ");
     _prompt = Prompt::RS485_BAUD_CHOICE;
-  } else if (line == "2") {
+  } else if (line == "2" && !cfg.rs485Uart0Shared) {
     Serial.print("Enter RX Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_RX_PIN;
-  } else if (line == "3") {
+  } else if (line == "3" && !cfg.rs485Uart0Shared) {
     Serial.print("Enter TX Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_TX_PIN;
-  } else if (line == "4") {
+  } else if (line == "4" && !cfg.rs485Uart0Shared) {
     Serial.print("Enter DE/RE Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_DERE_PIN;
   } else if (line == "5") {
@@ -440,6 +463,30 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.println("2. No response");
     Serial.print("> ");
     _prompt = Prompt::RS485_PELCO_RESPONSE_CHOICE;
+  } else if (line == "7") {
+    Serial.println();
+    if (cfg.rs485Uart0Shared) {
+      Serial.print("This switches RS485 back to an independent UART2 port (GPIO");
+      Serial.print(RS485_RX_PIN_DEFAULT);
+      Serial.print("/");
+      Serial.print(RS485_TX_PIN_DEFAULT);
+      Serial.print("/");
+      Serial.print(RS485_DE_RE_PIN_DEFAULT);
+      Serial.println(") and reboots.");
+    } else {
+      Serial.println("WARNING: This switches RS485 onto UART0 (GPIO3 RX0 / GPIO1 TX0), sharing it");
+      Serial.println("with the USB console. After this, the Serial menu becomes permanently");
+      Serial.println("unavailable (there is no way to tell your keystrokes apart from RS485");
+      Serial.println("traffic) - all further configuration must be done from the Web Config page");
+      Serial.println("(connect to the AP shown on the Status screen). Packet-level Serial debug");
+      Serial.println("logging is also disabled in this mode. The device reboots immediately after");
+      Serial.println("confirming.");
+    }
+    Serial.print("Type YES to confirm, or press Enter to cancel: ");
+    _prompt = Prompt::RS485_UART0_SHARED_CONFIRM;
+  } else if (line == "8") {
+    Serial.print("Enter Status LED Pin (GPIO number, blank to cancel): ");
+    _prompt = Prompt::RS485_STATUS_LED_PIN;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -919,7 +966,7 @@ void SerialMenu::handlePrompt(const String& line) {
       }
       int pin = line.toInt();
       String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/false, &error)) {
+      if (!validateRs485Pin(pin, /*requireOutput=*/false, cfg.statusLedPin, &error)) {
         Serial.print(error);
         Serial.print(" Try again (blank to cancel): ");
         _prompt = Prompt::RS485_RX_PIN;
@@ -942,7 +989,7 @@ void SerialMenu::handlePrompt(const String& line) {
       }
       int pin = line.toInt();
       String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/true, &error)) {
+      if (!validateRs485Pin(pin, /*requireOutput=*/true, cfg.statusLedPin, &error)) {
         Serial.print(error);
         Serial.print(" Try again (blank to cancel): ");
         _prompt = Prompt::RS485_TX_PIN;
@@ -965,7 +1012,7 @@ void SerialMenu::handlePrompt(const String& line) {
       }
       int pin = line.toInt();
       String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/true, &error)) {
+      if (!validateRs485Pin(pin, /*requireOutput=*/true, cfg.statusLedPin, &error)) {
         Serial.print(error);
         Serial.print(" Try again (blank to cancel): ");
         _prompt = Prompt::RS485_DERE_PIN;
@@ -977,6 +1024,30 @@ void SerialMenu::handlePrompt(const String& line) {
         Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
       }
       Serial.println("DE/RE pin set and saved to flash.");
+      printRs485Menu();
+      break;
+    }
+    case Prompt::RS485_STATUS_LED_PIN: {
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+        printRs485Menu();
+        break;
+      }
+      int pin = line.toInt();
+      String error;
+      if (!validateStatusLedPin(pin, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin, &error)) {
+        Serial.print(error);
+        Serial.print(" Try again (blank to cancel): ");
+        _prompt = Prompt::RS485_STATUS_LED_PIN;
+        break;
+      }
+      cfg.statusLedPin = (uint8_t)pin;
+      _storage.save(cfg);
+      _statusLed.begin(cfg.statusLedPin);
+      if (isStrappingGpio((uint8_t)pin)) {
+        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
+      }
+      Serial.println("Status LED pin set and saved to flash.");
       printRs485Menu();
       break;
     }
@@ -1049,10 +1120,22 @@ void SerialMenu::handlePrompt(const String& line) {
       }
       break;
     }
+    case Prompt::RS485_UART0_SHARED_CONFIRM: {
+      if (line == "YES") {
+        bool enabling = !cfg.rs485Uart0Shared;
+        Serial.println(enabling ? "Switching to UART0 Shared Mode and rebooting..."
+                                 : "Switching back to UART2 and rebooting...");
+        setRs485Uart0SharedMode(_routing, _storage, _rs485, enabling);
+      } else {
+        Serial.println("Cancelled.");
+        printRs485Menu();
+      }
+      break;
+    }
     case Prompt::FACTORY_RESET_CONFIRM: {
       if (line == "YES") {
         Serial.println("Factory reset confirmed. Restoring defaults and rebooting...");
-        performFactoryReset(_routing, _storage, _rs485);
+        performFactoryReset(_routing, _storage, _rs485, _statusLed);
       } else {
         Serial.println("Cancelled.");
         printMainMenu();
