@@ -9,7 +9,7 @@
 #define RS485_BAUD_DEFAULT 9600
 
 // ---- Status LED ----
-#define STATUS_LED_PIN 2
+#define STATUS_LED_PIN 13
 
 // ---- VISCA framing ----
 #define VISCA_BUFFER_SIZE 128
