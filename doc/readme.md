@@ -664,8 +664,9 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
 >
 > **알려진 한계 — Focus One Push**: `D3 19` 응답의 Focus 필드가 1비트(Manual/Auto)뿐이라
 > 카메라 OSD의 세 번째 모드(One Push)를 표현할 수 없다. 게이트웨이는 One Push(VISCA
-> `0x04`)를 Manual로 접어서 보고한다. DATA2 bit1이 One Push를 나타낼 가능성이 있으나
-> 실측하지 못했다 (ED-P를 One Push 포커스로 두고 `D3 19` 응답을 캡처하면 확인 가능).
+> `0x04`)를 Manual로 접어서 보고한다.
+>
+> 아직 해독하지 못한 조회 항목(`D3 16`)과 미검증 항목은 [todo.md](todo.md)에 정리했다.
 >
 > 응답 규격은 ED-P 4대(설정이 서로 다른)의 실측값 6건을 모두 재현한다:
 >
