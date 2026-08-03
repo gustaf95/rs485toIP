@@ -5,8 +5,8 @@ namespace {
 constexpr uint32_t kTcpConnectTimeoutMs = 1000;
 }  // namespace
 
-void IpViscaClient::begin() {
-  _udp.begin(0);  // 임의의 로컬 포트 사용 (송신 전용)
+void IpViscaClient::begin(uint16_t localPort) {
+  _udp.begin(localPort);
 }
 
 bool IpViscaClient::sendUdp(const IPAddress& ip, uint16_t port, const uint8_t* data, uint8_t len) {

@@ -5,7 +5,7 @@ namespace {
 const char* kNamespace = "visca-gw";
 const char* kBlobKey = "config";
 constexpr uint32_t kConfigMagic = 0x56494738;  // "VIG8" (bumped for the camera-slot layout)
-constexpr uint16_t kConfigVersion = 8;  // bumped: SystemConfig에 statusLedPin 필드 추가
+constexpr uint16_t kConfigVersion = 9;  // bumped: SystemConfig에 rs485Invert 필드 추가
 }  // namespace
 
 bool Storage::load(SystemConfig& config) {

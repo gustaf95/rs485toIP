@@ -8,7 +8,7 @@ void performFactoryReset(RoutingTable& routing, Storage& storage, Rs485Port& rs4
   SystemConfig& cfg = routing.get();
   storage.save(cfg);
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
-              cfg.rs485Uart0Shared);
+              cfg.rs485Uart0Shared, cfg.rs485Invert);
   statusLed.begin(cfg.statusLedPin);
 
   Serial.flush();

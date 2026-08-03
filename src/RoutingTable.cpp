@@ -19,10 +19,16 @@ void RoutingTable::applyDefaults() {
   _config.rs485RxPin = RS485_RX_PIN_DEFAULT;
   _config.rs485TxPin = RS485_TX_PIN_DEFAULT;
   _config.rs485DeRePin = RS485_DE_RE_PIN_DEFAULT;
+  _config.rs485Invert = RS485_INVERT_DEFAULT;
   _config.rs485Uart0Shared = false;
   _config.statusLedPin = STATUS_LED_PIN_DEFAULT;
   _config.inputProtocol = InputProtocol::PELCO_D;
-  _config.pelcoResponseMode = PelcoResponseMode::SYNTHETIC;
+  // 기본값은 NONE(응답 안 함)이다. 이 게이트웨이가 놓이는 RS485 버스에는 컨트롤러가
+  // 직접 제어하는 실물 카메라(EDIS ED-P 등)가 같이 물려 있고, 그 카메라들은 자기
+  // 명령에 스스로 응답한다. 게이트웨이가 주소를 가리지 않고 ACK를 쏘면 실물 카메라의
+  // 응답과 같은 버스에서 충돌해 컨트롤러가 양쪽 다 못 읽는다 - 응답이 필요 없는데
+  // 보내는 쪽이 훨씬 치명적이다.
+  _config.pelcoResponseMode = PelcoResponseMode::NONE;
 
   _config.responseMode = ResponseMode::NONE;
   _config.debugMode = false;
@@ -32,7 +38,7 @@ void RoutingTable::applyDefaults() {
     slot.ip = {{0, 0, 0, 0}};
     slot.port = DEFAULT_CAMERA_PORT;
     slot.protocol = ProtocolMode::IP_VISCA_RAW_UDP;
-    slot.addressMode = AddressMode::REWRITE_0x81;
+    slot.addressMode = AddressMode::PRESERVE;
   }
 }
 

@@ -8,6 +8,25 @@
 #define RS485_DE_RE_PIN_DEFAULT 27
 #define RS485_BAUD_DEFAULT 9600
 
+// UART 신호 반전 여부의 초기 기본값. 이 프로젝트가 상대하는 배선에서는 RS485
+// A/B(D+/D-)가 뒤집힌 채로 들어와서, 반전을 켜지 않으면 수신 바이트가 전부
+// 깨진다(0xFF 프레임이 0x00으로 읽히고 나머지는 한 비트씩 밀린 보수값이 된다).
+// 그래서 기본값을 true로 둔다 - A/B를 정상 결선한 보드에서는 RS485 Settings
+// 화면에서 꺼야 한다 (RoutingTable::applyDefaults() 참고).
+#define RS485_INVERT_DEFAULT true
+
+// USB 콘솔(UART0)의 속도. RS485 속도와 무관하며, Debug Mode 로그가 loop()를 오래
+// 붙잡지 않도록 최대한 빠르게 잡는다 (main.cpp setup()의 주석 참고). 이 값을 바꾸면
+// platformio.ini의 monitor_speed도 같이 맞춰야 한다.
+// UART0 Shared Mode에서는 이 값을 쓰지 않는다 - 그 모드에서는 Serial이 곧 RS485
+// 데이터 라인이라 rs485Baudrate로 열린다.
+#define SERIAL_CONSOLE_BAUD 115200
+
+// RS485 UART 수신 링버퍼 크기. 기본값(256)이면 Debug Mode 로그처럼 loop()를 잠시
+// 붙잡는 작업 중에 들어온 바이트가 넘쳐 유실된다. 9600bps 기준 1024바이트면 약 1초의
+// 정체를 견딘다.
+#define RS485_RX_BUFFER_SIZE 1024
+
 // ---- RS485 / UART0 Shared Mode ----
 // 일부 보드 리비전은 RS485 트랜시버가 UART0(RX0/TX0)에 물리적으로 고정 결선되어
 // 있어 USB 콘솔과 Serial을 공유한다. 이 모드에서는 RX/TX/DE-RE 핀이 모두 이 값으로
@@ -26,6 +45,52 @@
 #define VISCA_MIN_PACKET_LEN 3
 #define VISCA_PACKET_TIMEOUT_MS 50
 #define VISCA_TERMINATOR 0xFF
+
+// Pelco -> VISCA 번역 결과가 직전과 완전히 동일할 때, 이 시간 안에 들어온 재전송은
+// 카메라로 내보내지 않는다 (main.cpp의 isDuplicateViscaCommand()). Pelco 컨트롤러는
+// 조이스틱을 물고 있는 동안 같은 프레임을 초당 수십 번 재전송하는데, VISCA
+// Pan-tiltDrive는 Stop이 올 때까지 유지되는 래치 명령이라 그대로 흘리면 카메라 명령
+// 큐만 밀린다. 방향/속도가 바뀌면 바이트가 달라져 즉시 통과하므로 반응성은 그대로다.
+#define VISCA_DUPLICATE_SUPPRESS_MS 200
+
+// ---- EDIS ED-P 벤더 확장 (Pelco-D) ----
+// ZU-EPC7000 <-> EDIS ED-P 사이에서 실측한 벤더 고유 확장 명령이다. 표준 Pelco-D
+// 확장 옵코드 표(0x03~0x6F) 밖의 값이라 표준 문서에는 없다. 둘 다 CMND1=0x00을 쓴다.
+//
+//   SET:   FF ADDR 00 C3 pp qq CK   -> VISCA `8x 01 04 pp qq FF` 와 1:1 대응
+//   GET:   FF ADDR 00 D3 pp ?? CK   -> pp가 조회할 항목
+//   응답:  FF ADDR R1 D7 pp val CK
+//
+// SET의 pp/qq가 VISCA 명령 코드/값과 그대로 같다는 게 실측으로 확인됐다 (Iris
+// Auto/Manual = `39 00`/`39 03`, Focus Auto/Manual = `38 02`/`38 03`, One Push AF =
+// `18 01` - 전부 FoMaKo 매뉴얼의 VISCA 표와 일치). SET에는 응답이 없고, 컨트롤러는
+// 주기적인 GET 폴링으로 화면을 갱신한다.
+#define PELCO_EDIS_SET_CMD 0xC3
+#define PELCO_EDIS_QUERY_CMD 0xD3
+#define PELCO_EDIS_QUERY_RESPONSE 0xD7
+// GET 항목 중 유일하게 해독된 것 - Iris/AWB/Focus의 Auto/Manual 상태를 한 번에 묶어
+// 돌려준다. 컨트롤러 LED 화면에 표시되는 세 항목이 정확히 이것이다.
+#define PELCO_EDIS_QUERY_MODE_STATUS 0x19
+// 전원 상태 조회. 응답은 `FF ADDR 00 D7 00 <code> CK` 형태로, code가 VISCA
+// CAM_PowerInq 값 그대로다 (0x02 On, 0x03 Standby). 모드 상태 조회와 달리 RESP1에
+// 데이터가 실리지 않고 CMND1(0x00)이 그대로 에코된다.
+#define PELCO_EDIS_QUERY_POWER 0x04
+// 응답 RESP1의 상위 니블. 실측한 4대 모두 0x5로 고정이고 컨트롤러가 표시하지 않는
+// 항목이라, 정체를 모르는 채로 관측값을 그대로 채운다.
+#define PELCO_EDIS_STATUS_RESP1_BASE 0x50
+#define PELCO_EDIS_STATUS_IRIS_MANUAL 0x40   // DATA2 bit6
+#define PELCO_EDIS_STATUS_FOCUS_MANUAL 0x01  // DATA2 bit0
+
+// 카메라의 AE/WB/Focus 모드를 VISCA로 조회해 캐시를 갱신하는 주기와, 한 조회의
+// 응답을 기다리는 시간. VISCA 조회 응답은 셋 다 `y0 50 pp FF`로 똑같이 생겨서 어느
+// 질문의 답인지 구분할 수 없다 - 그래서 한 번에 하나씩만 던지고 답을 받거나
+// 타임아웃될 때까지 다음 조회를 보내지 않는다.
+#define MODE_INQUIRY_INTERVAL_MS 1000
+#define MODE_INQUIRY_TIMEOUT_MS 500
+// C3 SET 직후 그 항목만 우선 조회하기까지 기다리는 시간. 라운드로빈을 한 바퀴(항목 4개
+// x 1초) 기다리지 않고 바로 확인해서, 카메라가 명령을 거부했을 때 컨트롤러 표시가
+// 오래 거짓말하지 않게 한다. 카메라가 명령을 적용할 여유는 줘야 하므로 0은 아니다.
+#define MODE_INQUIRY_SET_VERIFY_DELAY_MS 300
 
 // ---- Pelco-D framing ----
 // Pelco-D 프레임은 항상 0xFF로 시작하고 길이가 고정 7바이트다

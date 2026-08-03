@@ -51,13 +51,21 @@ FoMaKo 매뉴얼 기준 확인된 제어 정보는 다음과 같다.
 
 | 용도                   | ESP32 인터페이스 | 권장 핀                    | 설명                              |
 | ---------------------- | ---------------- | -------------------------- | --------------------------------- |
-| USB Serial 디버그/설정 | UART0 / Serial   | TX0, RX0                   | PC와 연결, 메뉴 출력 및 설정 입력 |
+| USB Serial 디버그/설정 | UART0 / Serial   | TX0, RX0                   | PC와 연결, 메뉴 출력 및 설정 입력 (**115200bps**) |
 | RS485 VISCA 수신/송신  | UART2 / Serial2  | RX2 = GPIO25, TX2 = GPIO26 | RS485 모듈 연결                   |
 | RS485 방향 제어        | GPIO             | GPIO27                     | DE, /RE 제어                      |
 
 중요 사항:
 
-- UART0는 USB Serial 전용으로 사용한다.
+- UART0는 USB Serial 전용으로 사용한다. 속도는 RS485와 무관하게 **115200bps** 고정이다
+  (`SERIAL_CONSOLE_BAUD`, `platformio.ini`의 `monitor_speed`와 같아야 함).
+  - 9600bps로 두면 Debug Mode에서 문제가 생긴다. 패킷당 로그가 170자에 가까운데 9600bps로는
+    그것만 약 177ms가 걸리고, `Serial.print()`는 TX 버퍼가 차면 블로킹하므로 그동안 `loop()`가
+    멈춰 RS485 수신 바이트를 놓친다. 유실된 프레임에 Stop 명령이 섞여 있으면 카메라가 멈추지
+    않는다. 115200이면 같은 출력이 약 15ms로 줄어든다.
+  - 함께, RS485 수신 링버퍼를 기본값 256에서 `RS485_RX_BUFFER_SIZE`(1024)로 키워
+    `loop()`가 잠시 멈춰도 바이트가 넘치지 않게 했다 (`Rs485Port::begin()`에서
+    `setRxBufferSize()`를 `begin()` 앞에 호출).
 - RS485는 UART2에 연결한다.
 - RS485를 TX0/RX0에 연결하지 않는다.
 - TX0/RX0를 RS485와 공유하면 업로드, 디버그, RS485 통신이 충돌할 수 있다.
@@ -158,7 +166,7 @@ IP output:
 81 01 06 04 FF
 ```
 
-IP 카메라로 보낼 때는 기본적으로 첫 바이트를 `0x81`로 바꾼다. 이유는 IP 주소로 이미 대상 카메라가 정해졌기 때문에, IP 카메라는 자기 자신을 1번 카메라로 받는 것이 가장 안전하기 때문이다.
+IP 카메라로 보낼 때 첫 바이트를 어떻게 처리할지는 슬롯별 Address Mode로 정한다(5.2절). IP 주소로 이미 대상 카메라가 정해지므로, 카메라가 자기 VISCA 주소를 1번으로 쓰고 있다면 `rewrite_0x81`이 가장 안전하다.
 
 ---
 
@@ -176,7 +184,7 @@ IP 카메라로 보낼 때는 기본적으로 첫 바이트를 `0x81`로 바꾼�
 | Camera IP     | 대상 IP 카메라 주소       | 비어 있음        |
 | Port          | IP VISCA 포트             | 5678             |
 | Protocol      | 전송 프로토콜             | IP_VISCA_RAW_UDP |
-| Address Mode  | IP 전송 시 첫 바이트 처리 | rewrite_0x81     |
+| Address Mode  | IP 전송 시 첫 바이트 처리 | preserve         |
 | Enabled       | 사용 여부                 | IP가 있으면 사용 |
 
 라우팅 동작은 다음과 같다.
@@ -205,7 +213,7 @@ CAM5 → 192.168.1.105:5678 | 81 01 00 01 FF
 CAM7 → 192.168.1.107:5678 | 81 01 00 01 FF
 ```
 
-Broadcast도 기본적으로 `rewrite_0x81` 정책을 적용한다.
+Broadcast도 슬롯별 Address Mode 설정을 그대로 적용한다.
 
 ## 5.2 Address Mode
 
@@ -215,7 +223,7 @@ Broadcast도 기본적으로 `rewrite_0x81` 정책을 적용한다.
 | preserve       | RS485에서 받은 첫 바이트를 그대로 유지             |
 | rewrite_by_cam | 카메라 번호에 맞춰 `0x81~0x87`로 변경              |
 
-기본값은 `rewrite_0x81`이다.
+기본값은 `preserve`이다 - Pelco-D 입력 경로에서는 게이트웨이가 카메라 번호로 만들어낸 `0x81~0x87`이 그대로 나간다. 카메라가 자기 VISCA 주소를 1번으로 쓰고 있다면 슬롯별로 `rewrite_0x81`로 바꿔야 한다.
 
 ---
 
@@ -356,11 +364,12 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | RS485 RX Pin          | UART2 RX                 | GPIO25                                         |
 | RS485 TX Pin          | UART2 TX                 | GPIO26                                         |
 | RS485 DE/RE Pin       | 방향 제어 핀             | GPIO27                                         |
+| RS485 Signal Inversion | UART 신호 극성 반전     | Inverted (A/B 반전 결선 보정)                  |
 | Camera 1 IP           | CAM1 IP                  | empty                                          |
 | Camera 1 Port         | CAM1 Port                | 5678                                           |
 | Camera 1 Protocol     | CAM1 Protocol            | IP_VISCA_RAW_UDP                               |
-| Camera 1 Address Mode | CAM1 Address Mode        | rewrite_0x81                                   |
-| Camera 2~7 설정       | 위와 동일                | empty / 5678 / IP_VISCA_RAW_UDP / rewrite_0x81 |
+| Camera 1 Address Mode | CAM1 Address Mode        | preserve                                       |
+| Camera 2~7 설정       | 위와 동일                | empty / 5678 / IP_VISCA_RAW_UDP / preserve     |
 | Response Mode         | 응답 처리 모드           | none                                           |
 | Debug Mode            | 디버그 출력 여부         | off                                            |
 
@@ -548,9 +557,12 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   DE/RE Pin        : GPIO27
   Baudrate         : 9600
   Format           : 8N1
+  Signal Inversion : Inverted (A/B swapped wiring)
   Default Mode     : Receive
   Input Protocol   : Pelco-D
-  Pelco Response   : Respond (synthetic ACK)
+  Pelco Response   : No response
+  Camera Response  : none (drop camera responses)
+  Status LED Pin   : GPIO13
 
 ------------------------------------------------------------
  Options
@@ -561,11 +573,31 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   4. Set DE/RE Pin
   5. Set Input Protocol
   6. Set Pelco Response Mode
+  7. Switch to UART0 Shared Mode (board wires RS485 onto RX0/TX0)
+  8. Set Status LED Pin
+  9. Set Signal Inversion
+ 10. Set Camera Response Mode
   0. Back to Main Menu
 ```
 
 Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART2에 재적용되며,
 별도의 저장 메뉴는 없다.
+
+"9. Set Signal Inversion"은 UART 신호의 극성을 뒤집는다. 기본값은 **Inverted**이다 — 이
+프로젝트가 상대하는 배선에서 RS485 A/B(D+/D-)가 뒤집힌 채로 들어오는 것이 확인되어, 신규
+설치 시 바로 맞는 쪽을 기본값으로 삼았다. 반전이 안 맞으면 수신 바이트가 전부 깨지는데,
+증상이 특징적이다 — 0xFF로 시작해야 할 Pelco-D 프레임이 `00`으로 시작하고, 뒤 바이트들은
+한 비트씩 밀린 보수값이 되어 12.5 Live Packet Monitor에 `00 BE 59 DF 45` 같은 패턴이
+반복해서 찍힌다. 값을 선택하는 즉시 flash에 저장되고 UART에 재적용된다(재부팅 불필요).
+
+ESP32 UART는 이 플래그 하나로 RXD/TXD를 함께 반전시키므로 수신뿐 아니라 합성 ACK 송신도
+같은 극성으로 나간다. A/B가 뒤집힌 버스에서는 양방향 모두 이게 맞다. 정석은 하드웨어에서
+A/B를 바로잡는 것이고, 이 옵션은 결선을 손댈 수 없는 현장을 위한 소프트웨어 보정이다.
+
+```text
+1. Inverted (A/B swapped wiring)
+2. Normal
+```
 
 "5. Set Input Protocol"은 RS485로 들어오는 입력이 어느 프로토콜인지 선택한다. 값을 선택하는
 즉시 flash에 저장된다. 기본값은 **Pelco-D**이다 — 이 프로젝트의 RS485 컨트롤러(ZU-EPC7000)와
@@ -597,9 +629,100 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
   Response로 재포장하는 로직이 필요해 후속 작업으로 남겨둠), 그리고 FoMaKo 자체가 Pelco-D/P로
   지원하지 않는 Run Group/Swing·Aux·절대좌표 Set·Focus Position Query는 애초에 구현 대상이
   아님 — 이런 패킷은 조용히 무시된다(Address가 카메라 슬롯 1~7 밖이어도 마찬가지).
+- **EDIS 벤더 확장 (`0xC3` SET / `0xD3` GET)**: ZU-EPC7000 ↔ EDIS ED-P 사이에서 실측한
+  벤더 고유 명령으로, 표준 Pelco-D 확장 옵코드 표 밖의 값이다. 바로 아래 상자 참고.
+
+> **EDIS 벤더 확장 (실측으로 복원)**
+>
+> ```
+> SET:   FF ADDR 00 C3 pp qq CK        →  VISCA `8x 01 04 pp qq FF` 와 1:1 대응
+>
+> GET:   FF ADDR 00 D3 19 E6 CK        →  Iris/AWB/Focus 모드 일괄 조회
+> 응답:  FF ADDR R1 D7 19 D2 CK
+>          R1 = 0x50 | (VISCA WB 모드 코드 & 0x0F)
+>          D2 = (Iris가 Auto가 아니면 0x40) | (Focus가 Auto가 아니면 0x01)
+>
+> GET:   FF ADDR 00 D3 04 00 CK        →  전원 상태 조회
+> 응답:  FF ADDR 00 D7 00 <code> CK      code = VISCA CAM_Power (0x02 On / 0x03 Standby)
+> ```
+>
+> 전원 조회는 모드 조회와 응답 배치가 다르다 — RESP1에 데이터가 실리지 않고 CMND1(0x00)이
+> 그대로 에코된다.
+>
+> **카메라가 켜져 있지 않으면 어떤 조회에도 답하지 않는다.** 실물 ED-P가 스탠바이 중
+> 침묵하는 것과 같은 동작이다. 전원 상태는 VISCA `CAM_PowerInq`(`09 04 00`)를 주기적으로
+> 던져 확인하고, 컨트롤러가 `C3 00 03`으로 스탠바이를 명령하면 그 자리에서 즉시 반영된다.
+>
+> 게이트웨이가 보낸 응답은 Debug Mode의 `[TX] Mode status | FF 06 55 D7 19 41 8C` 로그와
+> Raw Byte Monitor의 `[TX ]` 줄에서 확인할 수 있다 (12.5.2절 참고).
+>
+> SET의 `pp`/`qq`가 VISCA 명령 코드/값과 그대로 같다는 것이 실측으로 확인됐다:
+> Power On/Standby = `00 02`/`00 03`, Iris Auto/Manual = `39 00`/`39 03`,
+> Focus Auto/Manual = `38 02`/`38 03`, One Push AF = `18 01` — 전부 FoMaKo 매뉴얼의
+> VISCA 표와 일치한다. SET에는 응답이 없고, 컨트롤러는 주기적인 GET 폴링으로 화면을
+> 갱신한다.
+>
+> **알려진 한계 — Focus One Push**: `D3 19` 응답의 Focus 필드가 1비트(Manual/Auto)뿐이라
+> 카메라 OSD의 세 번째 모드(One Push)를 표현할 수 없다. 게이트웨이는 One Push(VISCA
+> `0x04`)를 Manual로 접어서 보고한다. DATA2 bit1이 One Push를 나타낼 가능성이 있으나
+> 실측하지 못했다 (ED-P를 One Push 포커스로 두고 `D3 19` 응답을 캡처하면 확인 가능).
+>
+> 응답 규격은 ED-P 4대(설정이 서로 다른)의 실측값 6건을 모두 재현한다:
+>
+> | Iris/AWB/Focus | R1 | D2 |
+> | --- | --- | --- |
+> | Manual/Manual/Manual | `55` | `41` |
+> | Auto/Manual/Manual | `55` | `01` |
+> | Manual/Manual/Auto | `55` | `40` |
+> | Manual/Auto/Auto | `50` | `40` |
+> | Auto/Auto/Auto | `50` | `00` |
+>
+> `R1`의 상위 니블은 실측 4대 모두 `0x5`로 고정이며 컨트롤러가 표시하지 않는 항목이라,
+> 정체를 모르는 채로 관측값을 상수로 채운다(`PELCO_EDIS_STATUS_RESP1_BASE`).
+> GET의 `DATA1`이 `0x19` 외의 값(`0x04`, `0x16` 관측됨)인 경우는 아직 해독하지 못했다 —
+> 답을 지어내면 컨트롤러가 잘못된 값을 표시하므로 침묵한다.
+>
+> **게이트웨이 동작**: `C3`는 `86 01 04 pp qq FF`로 변환해 전달하되, 실측으로 확인된
+> `pp`(`38`/`39`/`35`/`18`)만 통과시킨다. `D3 19`는 `modeCache`에서 응답을 조립해
+> 회신한다. 캐시는 부팅 시 전부 Auto로 시작해서, `C3`가 지나갈 때 방금 설정한 값으로
+> 즉시 갱신되고(낙관적), `pollCameraModeInquiries()`가 1초 주기로 VISCA 조회
+> (`09 04 00`/`09 04 39`/`09 04 35`/`09 04 38`)를 하나씩 던져 실제 값으로 수렴한다. 네 조회의
+> 응답이 전부 `y0 50 pp FF`로 똑같이 생겨 구분이 안 되므로, 답을 받거나 타임아웃될 때까지
+> 다음 조회를 보내지 않는다.
+>
+> `C3` SET이 지나가면 **그 항목을 라운드로빈 순서보다 먼저**(`MODE_INQUIRY_SET_VERIFY_DELAY_MS`
+> 후) 되물어 실제로 적용됐는지 확인한다. 카메라가 명령을 거부하면 캐시의 낙관적 값이 곧바로
+> 실제 값으로 되돌아가므로, 컨트롤러 화면이 한 바퀴(약 4초) 동안 거짓말하지 않는다.
+>
+> `D3` 응답은 **IP가 설정된 슬롯에만** 나간다. IP가 비어 있는 주소는 같은 버스의 실물
+> ED-P 카메라 몫이고 그쪽이 이미 스스로 답하므로, 끼어들면 버스 충돌이 난다. 이 검사가
+> 충돌을 막아주므로 `pelcoResponseMode`(합성 ACK 설정)와는 독립적으로 동작한다 — 그건
+> "명령을 받았다"는 ACK를 지어낼지에 대한 설정이고, 이쪽은 컨트롤러가 명시적으로 값을
+> 물어본 데 대한 데이터 응답이라 성격이 다르다.
+- **모르는 Extended Command는 무시**: CMND2 bit0이 1인데 위 옵코드 중 어느 것도 아니면
+  모션 비트 디코드로 넘기지 않고 버린다(Debug Mode에서 `Unknown extended command CMND2=0x..`
+  로그). Standard Command는 CMND2 bit0이 항상 0으로 정의되어 있어(pelcoD_command.md 4절)
+  이 구분이 안전하다.
+
+  이 가드가 없으면 옵코드 값이 통째로 Pan/Tilt/Zoom/Focus 비트로 오독된다. 실제로
+  ZU-EPC7000이 아이들 상태에서도 계속 보내는 폴링 명령(`FF ADDR 00 D3 D1 D2 CK`)의
+  `CMND2=0xD3`이 Pan Right(0x02) + Tilt Down(0x10) + Zoom Wide(0x40) + Focus Far(0x80)로
+  해석되어, 컨트롤러를 건드리지 않아도 카메라가 오른쪽 아래로 계속 밀리는 문제가 있었다.
+  `0xD3`은 표준 Extended 옵코드 표(0x03~0x6F) 밖의 EDIS ED-P 벤더 고유 명령으로 보인다.
+
+**중복 명령 억제**: 번역 결과가 직전에 보낸 것과 바이트 단위로 완전히 같으면,
+`VISCA_DUPLICATE_SUPPRESS_MS`(200ms) 안에 들어온 재전송은 카메라로 내보내지 않는다
+(`isDuplicateViscaCommand()`, Debug Mode에서 `Duplicate command suppressed` 로그).
+
+Pelco 컨트롤러는 조이스틱을 물고 있는 동안 같은 프레임을 초당 수십 번 재전송한다. 반면
+VISCA `Pan-tiltDrive`는 Stop이 올 때까지 유지되는 **래치 명령**이라 한 번만 보내면 된다.
+그 재전송을 그대로 UDP로 흘리면 카메라 명령 큐가 밀려서, 조이스틱을 놓아도 밀린 명령이
+다 소화될 때까지 카메라가 계속 흘러가고 반응도 굼떠진다. 방향이나 속도가 조금이라도
+바뀌면 바이트가 달라져 즉시 통과하므로, Stop을 포함해 새 명령이 지연되는 일은 없다.
 
 Pan/Tilt 속도(DATA1/DATA2)는 실측 전까지 Pelco-D 표준 관례인 0x00~0x3F 범위를 가정해 VISCA
-속도로 선형 환산한다(`scalePelcoSpeedToVisca()`). 커맨드 세부 사항과 번역 근거는
+속도로 선형 환산한다(`scalePelcoSpeedToVisca()`, 결과는 1~viscaMax로 클램프된다). FoMaKo
+매뉴얼 5.2절 기준 VISCA 상한은 팬 `0x18`, 틸트 `0x14`다. 커맨드 세부 사항과 번역 근거는
 [pelcoD_command.md](pelcoD_command.md) / [pelcoP_command.md](pelcoP_command.md) 참고.
 
 "Pelco-D/P Autodetect"는 패킷 단위로 시작 바이트(Pelco-D는 0xFF, Pelco-P는 0xA0)를 보고
@@ -639,9 +762,59 @@ Debug Mode에서는 `[RAW-BRIDGE TX]`/`[RAW-BRIDGE RX]`로 로그가 찍히고, 
 
 "6. Set Pelco Response Mode"는 Pelco-D/Pelco-P/Autodetect 공통 설정이다. 유효한 Pelco
 패킷을 받을 때마다 General Response(ACK, Pelco-D는 `FF ADDR 00 CKSM` 4바이트, Pelco-P는
-`A0 ADDR 00 AF CKSM` 5바이트)를 RS485로 합성해서 돌려줄지 선택한다. 기본값은 **Respond**
-(응답함)이다 — 컨트롤러가 응답을 기다리다 멈추는 쪽이, 불필요한 응답을 무시하는 쪽보다
-훨씬 치명적이라 안전한 쪽을 기본값으로 삼았다.
+`A0 ADDR 00 AF CKSM` 5바이트)를 RS485로 합성해서 돌려줄지 선택한다. 기본값은 **No response**
+(응답 안 함)이다.
+
+기본값을 바꾼 이유는 실측 때문이다. 이 게이트웨이가 놓이는 RS485 버스에는 컨트롤러가
+직접 제어하는 실물 카메라(EDIS ED-P 등)가 같이 물려 있고, 그 카메라들은 자기 명령에
+스스로 응답한다. RS485는 2선 멀티드롭이라 게이트웨이가 주소를 가리지 않고 ACK를 쏘면
+실물 카메라의 응답과 **같은 버스에서 드라이버 두 개가 동시에 물려** 컨트롤러가 양쪽 다
+못 읽는다. 응답이 필요 없는데 보내는 쪽이 훨씬 치명적이다.
+
+이 설정을 Respond로 켜더라도, ACK는 아래 두 조건을 **모두** 만족할 때만 나간다.
+
+1. **담당 슬롯일 것** — 카메라 슬롯 1~7 안이면서 IP가 설정된 주소(`isOwnedSlot()`).
+2. **실제로 처리한 명령일 것** — `translatePelcoAndForward()`가 카메라로 명령을 하나라도
+   내보냈을 때만(반환값 `true`). 모르는 Extended Command(`CMND2` bit0=1), 아직 미구현인
+   Query(0x51/0x53/0x55), 비트가 하나도 안 켜진 패킷은 ACK 없이 무시한다.
+
+2번이 필요한 이유는 두 가지다. ACK는 "받아서 처리했다"는 뜻인데 무시한 명령에 보내면 거짓
+신호가 되고, ACK 한 번마다 RS485를 4바이트 점유하면서 그동안 수신도 막힌다(DE/RE가 송신
+쪽으로 넘어가므로). ZU-EPC7000의 `CMND2=0xD3` 폴링처럼 쉬지 않고 들어오는 명령에 매번
+응답하면 그 손실이 계속 누적된다.
+
+ACK 전송 시점도 번역/전달 **뒤**로 옮겼다 — 그래야 ACK가 "전달했다"는 뜻과 실제로 일치한다. IP가 비어 있는 슬롯이나 범위 밖 주소는 게이트웨이가 담당하는
+대상이 아니므로 침묵한다 — 그 주소의 실물 Pelco 카메라가 스스로 응답할 몫이다. 덕분에
+"IP 카메라(FoMaKo)에는 ACK를 주고, 같은 버스의 실물 카메라(ED-P)에는 안 주는" 혼재 구성이
+전역 설정 하나로 가능하다.
+
+### 12.2.1 Camera Response Mode ("10. Set Camera Response Mode")
+
+앞의 Pelco Response Mode가 "게이트웨이가 **지어낸** 응답"이라면, 이쪽은 "**IP 카메라가 실제로
+보낸** 응답을 RS485로 되돌릴지"를 정한다. 기본값은 **none**이다.
+
+| 값 | 동작 |
+| --- | --- |
+| `none` | 카메라 응답을 버린다 (기본값) |
+| `synthetic` | 게이트웨이가 VISCA ACK/Completion을 합성해 돌려준다 — **VISCA 입력 경로 전용** |
+| `forward` | 카메라가 보낸 바이트를 그대로 RS485로 내보낸다 |
+| `forward_rewrite` | `forward`와 같되 첫 바이트를 `0x90 \| 카메라번호`로 바꾼다 |
+
+**입력이 Pelco 계열(`Pelco-D`/`Pelco-P`/`Autodetect`)이면 `forward`/`forward_rewrite`를 골라도
+RS485로 내보내지 않는다.** raw VISCA 바이트는 컨트롤러가 해석하지 못할 뿐 아니라, VISCA 응답의
+종료 바이트 `0xFF`가 Pelco-D의 SYNC 바이트와 같아서 **같은 버스에 물린 다른 Pelco 장비가 그
+자리에서 새 프레임을 시작해버린다** — 뒤이어 오는 진짜 명령의 앞부분을 그 유령 프레임이 삼켜서
+통째로 깨진다. 실측 예: FoMaKo(VISCA 주소 6)의 ACK은 `E0 41 FF`, Completion은 `E0 51 FF`로
+둘 다 `0xFF`로 끝난다.
+
+Pelco 입력에서는 대신 Debug Mode에 `Camera response from ...: E0 41 FF (not forwarded - ...)`
+로 찍어주므로, 카메라가 응답하는지 확인하는 진단 용도로는 그대로 쓸 수 있다. Pelco 쪽 ACK은
+위의 Pelco Response Mode가 이미 즉시 합성해 돌려주고 있어, VISCA ACK/Completion을 중계해봐야
+컨트롤러에 새로 줄 정보도 없다. 값이 실린 조회 응답을 Pelco Extended Response로 재포장하는
+로직은 아직 구현되어 있지 않다 (`doc/pelcoD_command.md` 10절, 후속 작업).
+
+`synthetic`은 `handleViscaPacket()` 경로에서만 동작한다 — Pelco 입력의 ACK는 위의 Pelco
+Response Mode가 담당하므로, Pelco 구성에서 이 값을 골라도 아무 효과가 없다.
 
 ```text
 1. Respond (synthetic ACK)
@@ -684,13 +857,13 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
 ------------------------------------------------------------
   CAM | VISCA | Camera IP       | Port | Protocol          | Addr Mode
   ----+-------+-----------------+------+-------------------+--------------
-   1  | 0x81  | -               | 5678 | IP_VISCA_RAW_UDP  | rewrite_0x81
-   2  | 0x82  | -               | 5678 | IP_VISCA_RAW_UDP  | rewrite_0x81
-   3  | 0x83  | -               | 5678 | IP_VISCA_RAW_UDP  | rewrite_0x81
-   4  | 0x84  | -               | 5678 | IP_VISCA_RAW_UDP  | rewrite_0x81
-   5  | 0x85  | 192.168.1.105   | 5678 | IP_VISCA_RAW_UDP  | rewrite_0x81
-   6  | 0x86  | -               | 5678 | IP_VISCA_RAW_UDP  | rewrite_0x81
-   7  | 0x87  | -               | 5678 | IP_VISCA_RAW_UDP  | rewrite_0x81
+   1  | 0x81  | -               | 5678 | IP_VISCA_RAW_UDP  | preserve
+   2  | 0x82  | -               | 5678 | IP_VISCA_RAW_UDP  | preserve
+   3  | 0x83  | -               | 5678 | IP_VISCA_RAW_UDP  | preserve
+   4  | 0x84  | -               | 5678 | IP_VISCA_RAW_UDP  | preserve
+   5  | 0x85  | 192.168.1.105   | 5678 | IP_VISCA_RAW_UDP  | preserve
+   6  | 0x86  | -               | 5678 | IP_VISCA_RAW_UDP  | preserve
+   7  | 0x87  | -               | 5678 | IP_VISCA_RAW_UDP  | preserve
 
   Broadcast 0x88 : forward to all cameras with IP configured
 
@@ -712,7 +885,7 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
   Camera IP        : 192.168.1.105
   Port             : 5678
   Protocol         : IP_VISCA_RAW_UDP
-  Address Mode     : rewrite_0x81
+  Address Mode     : preserve
 
 ------------------------------------------------------------
  Options
@@ -887,7 +1060,17 @@ Press Enter (no input) to return to Debug Mode menu.
 ------------------------------------------------------------
 [RAW] FF 01 00 08 20 00 29
 [RAW] FF 01 00 04 20 00 25
+[RAW] FF 06 00 D3 19 E6 D8
+[TX ] FF 06 50 D7 19 01 47
 ```
+
+`[RAW]`는 **버스에서 읽어들인** 바이트, `[TX ]`는 **게이트웨이가 내보낸** 패킷이다. 둘을
+나눠 찍는 이유가 있다 — 게이트웨이는 자기가 보낸 바이트를 자기 RX로 되들을 수 없다.
+`writePacket()`이 DE/RE를 송신 쪽으로 올리는 동안 트랜시버의 수신부가 꺼지기 때문이다.
+그래서 수신 바이트만 echo하면 우리 응답이 화면에서 통째로 사라져, 다른 카메라 응답은
+같은 줄에 보이는데 게이트웨이가 담당하는 주소만 응답이 없는 것처럼 보인다. `Rs485Port`의
+`setTxEcho()` 훅으로 송신 패킷을 직접 찍어 그 공백을 메운다 (실제 송신이 끝난 뒤에
+호출되므로 버스 타이밍에는 영향이 없다).
 
 이 예는 Pelco-D 프레임(`FF 01 00 08 20 00 29` = Tilt Up, `FF 01 00 04 20 00 25` = Pan Left)이
 정상적으로 들어오고 있다는 뜻이다. 만약 Live Packet Monitor에서는 아무것도 안 보이는데
@@ -895,6 +1078,18 @@ Press Enter (no input) to return to Debug Mode menu.
 실제 들어오는 프로토콜과 다르다는 뜻이다 (또는 노이즈로 체크섬이 계속 깨지는 경우).
 반대로 여기서도 아무것도 안 보인다면 배선, Baudrate, 또는 RX/TX 핀 설정 자체를 의심해야
 한다.
+
+바이트가 보이긴 하는데 매번 똑같은 값으로 깨져서 들어온다면 **신호 극성(Signal Inversion)**을
+의심해야 한다. Pelco-D 프레임은 반드시 `FF`로 시작하는데, 극성이 뒤집혀 있으면 그 `FF`가
+`00`으로 읽히고 뒤 바이트들은 한 비트씩 밀린 보수값이 되어 아래처럼 찍힌다:
+
+```text
+[RAW] 00 BE 59 DF 45
+[RAW] 00 BE 59 DF 45
+```
+
+`FF`가 한 번도 안 보이고 `00`으로 시작하는 고정 패턴이 반복된다면 12.2의 "9. Set Signal
+Inversion"을 반대로 바꿔보면 된다 (또는 하드웨어에서 A/B를 바꿔 결선한다).
 
 ### 12.5.3 Send Test Command
 
@@ -974,7 +1169,7 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 |---|---|---|
 | `GET /` | Main Menu 상태 블록 | Wi-Fi(STA/AP) 상태, Debug Mode, 각 페이지 링크 |
 | `GET`/`POST /network` | Network Settings | SSID(스캔 드롭다운 + 직접 입력), Password(빈 칸 = 기존 유지), DHCP, Static IP/Gateway/Subnet, Retry 버튼, AP SSID/Password(별도 폼, `POST /network/ap`) |
-| `GET`/`POST /rs485` | RS485 Settings | Baudrate, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode |
+| `GET`/`POST /rs485` | RS485 Settings | Baudrate, Signal Inversion, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode, Camera Response Mode |
 | `GET /routing` | Routing Table | CAM1~7 목록 |
 | `GET`/`POST /routing/cam?n=N` | Camera Detail | IP(빈 칸 = 삭제)/Port/Protocol(`RAW_DATA_UDP` 포함)/Address Mode |
 | `GET /counters` | Counters | 2초 자동 새로고침 |
@@ -1062,7 +1257,7 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 | PelcoDParser        | Pelco-D 고정 7바이트 프레임 파싱(합산 체크섬)            |
 | PelcoPParser        | Pelco-P 고정 8바이트 프레임 파싱(XOR 체크섬)             |
 | Rs485Port           | UART2 및 DE/RE 제어                                      |
-| IpViscaClient       | Raw UDP/TCP IP VISCA 전송                                |
+| IpViscaClient       | Raw UDP/TCP IP VISCA 전송 (UDP 소켓은 로컬 포트 5678에 bind) |
 | SonyViscaClient     | Sony VISCA over IP framing 및 전송                       |
 | RawBridgeClient     | Raw Bridge 모드 전용 UDP 소켓(고정 로컬 포트 리슨)       |
 | RoutingTable        | 카메라 1~7 IP/Port/Protocol/Address Mode 관리            |
@@ -1092,7 +1287,7 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 8. 해당 카메라 번호에 IP가 설정되어 있으면 IP VISCA로 전송한다.
 9. 해당 카메라 번호에 IP가 없으면 무시한다.
 10. `0x88` Broadcast가 들어오면 IP가 설정된 모든 카메라에 전송한다.
-11. 기본 Address Mode는 `rewrite_0x81`이다.
+11. 기본 Address Mode는 `preserve`이다.
 12. 기본 Protocol은 `IP_VISCA_RAW_UDP`이다.
 13. 기본 Port는 5678이다.
 14. AP는 STA 연결 여부와 무관하게 항상 켜둔다(`WIFI_AP_STA`, 13.1절).

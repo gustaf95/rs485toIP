@@ -67,6 +67,8 @@ class SerialMenu {
     RS485_PELCO_RESPONSE_CHOICE,
     RS485_UART0_SHARED_CONFIRM,
     RS485_STATUS_LED_PIN,
+    RS485_INVERT_CHOICE,
+    RESPONSE_MODE_CHOICE,
     ROUTING_SELECT_CAM,
     ROUTING_SET_IP_VALUE,
     ROUTING_SET_PORT_VALUE,
@@ -130,4 +132,5 @@ class SerialMenu {
   static String addressModeName(AddressMode mode);
   static String inputProtocolName(InputProtocol mode);
   static String pelcoResponseModeName(PelcoResponseMode mode);
+  static String responseModeName(ResponseMode mode);
 };

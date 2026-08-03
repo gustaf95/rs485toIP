@@ -45,6 +45,16 @@ String SerialMenu::pelcoResponseModeName(PelcoResponseMode mode) {
   return "?";
 }
 
+String SerialMenu::responseModeName(ResponseMode mode) {
+  switch (mode) {
+    case ResponseMode::NONE: return "none (drop camera responses)";
+    case ResponseMode::SYNTHETIC: return "synthetic (VISCA input only)";
+    case ResponseMode::FORWARD: return "forward (raw camera bytes)";
+    case ResponseMode::FORWARD_REWRITE: return "forward_rewrite (rewrite address)";
+  }
+  return "?";
+}
+
 // 의도적으로 아무것도 출력하지 않는다 - 리셋 직후 Serial은 완전히 침묵해야 하고
 // (main.cpp의 부팅/Wi-Fi 메시지도 마찬가지, menuActive() 참고), 메뉴를 여는 방법은
 // 문서(readme.md)에만 남긴다.
@@ -396,11 +406,15 @@ void SerialMenu::printRs485Menu() {
   Serial.print("  Baudrate         : ");
   Serial.println(cfg.rs485Baudrate);
   Serial.println("  Format           : 8N1");
+  Serial.print("  Signal Inversion : ");
+  Serial.println(cfg.rs485Invert ? "Inverted (A/B swapped wiring)" : "Normal");
   Serial.println("  Default Mode     : Receive");
   Serial.print("  Input Protocol   : ");
   Serial.println(inputProtocolName(cfg.inputProtocol));
   Serial.print("  Pelco Response   : ");
   Serial.println(pelcoResponseModeName(cfg.pelcoResponseMode));
+  Serial.print("  Camera Response  : ");
+  Serial.println(responseModeName(cfg.responseMode));
   Serial.print("  Status LED Pin   : GPIO");
   Serial.println(cfg.statusLedPin);
   Serial.println();
@@ -421,6 +435,8 @@ void SerialMenu::printRs485Menu() {
     Serial.println("  7. Switch to UART0 Shared Mode (board wires RS485 onto RX0/TX0)");
   }
   Serial.println("  8. Set Status LED Pin");
+  Serial.println("  9. Set Signal Inversion");
+  Serial.println(" 10. Set Camera Response Mode");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -428,7 +444,7 @@ void SerialMenu::printRs485Menu() {
 void SerialMenu::applyRs485Settings(const SystemConfig& cfg) {
   _storage.save(cfg);
   _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
-               cfg.rs485Uart0Shared);
+               cfg.rs485Uart0Shared, cfg.rs485Invert);
 }
 
 void SerialMenu::handleRs485Menu(const String& line) {
@@ -487,6 +503,24 @@ void SerialMenu::handleRs485Menu(const String& line) {
   } else if (line == "8") {
     Serial.print("Enter Status LED Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_STATUS_LED_PIN;
+  } else if (line == "9") {
+    Serial.println("1. Inverted (A/B swapped wiring)");
+    Serial.println("2. Normal");
+    if (cfg.rs485Uart0Shared) {
+      Serial.println("Note: in UART0 Shared Mode this also inverts the USB console signals.");
+    }
+    Serial.print("> ");
+    _prompt = Prompt::RS485_INVERT_CHOICE;
+  } else if (line == "10") {
+    Serial.println("1. none - drop camera responses (default)");
+    Serial.println("2. synthetic - gateway fakes ACK/Completion (VISCA input only)");
+    Serial.println("3. forward - send camera response bytes to RS485 as-is");
+    Serial.println("4. forward_rewrite - same as forward, but rewrite address to 0x9n");
+    Serial.println();
+    Serial.println("Note: forward/forward_rewrite send RAW VISCA bytes. A Pelco-D/P controller");
+    Serial.println("cannot parse those - repackaging into a Pelco response is not implemented yet.");
+    Serial.print("> ");
+    _prompt = Prompt::RESPONSE_MODE_CHOICE;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -952,6 +986,34 @@ void SerialMenu::handlePrompt(const String& line) {
         cfg.pelcoResponseMode = PelcoResponseMode::NONE;
         _storage.save(cfg);
         Serial.println("Pelco response mode set to No response and saved to flash.");
+      } else {
+        Serial.println("Invalid choice.");
+      }
+      printRs485Menu();
+      break;
+    }
+    case Prompt::RESPONSE_MODE_CHOICE: {
+      if (line == "1" || line == "2" || line == "3" || line == "4") {
+        cfg.responseMode = (ResponseMode)(line.toInt() - 1);
+        _storage.save(cfg);
+        Serial.print("Camera response mode set to ");
+        Serial.print(responseModeName(cfg.responseMode));
+        Serial.println(" and saved to flash.");
+      } else {
+        Serial.println("Invalid choice.");
+      }
+      printRs485Menu();
+      break;
+    }
+    case Prompt::RS485_INVERT_CHOICE: {
+      if (line == "1" || line == "2") {
+        cfg.rs485Invert = (line == "1");
+        // applyRs485Settings()가 UART를 새 반전 설정으로 다시 초기화한다 - 재부팅
+        // 없이 바로 적용된다.
+        applyRs485Settings(cfg);
+        Serial.print("Signal inversion set to ");
+        Serial.print(cfg.rs485Invert ? "Inverted" : "Normal");
+        Serial.println(" and saved to flash.");
       } else {
         Serial.println("Invalid choice.");
       }

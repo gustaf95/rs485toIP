@@ -41,6 +41,54 @@ unsigned long lastRawByteMs = 0;
 bool rawLineOpen = false;
 bool wasRawMonitorActive = false;
 
+// 카메라의 노출/화이트밸런스/포커스 모드를 VISCA 코드 그대로 캐시해둔다. Pelco
+// 컨트롤러의 D3 19 상태 조회에 답하려면 이 값이 필요한데, VISCA 조회 응답은 비동기로
+// 오므로 미리 받아둬야 한다.
+//
+// 초기값은 전부 Auto다 - 부팅 직후 아직 아무것도 조회하지 못한 상태에서도 컨트롤러에
+// 그럴듯한 답을 주고, 실제 값은 pollCameraModeInquiries()가 따라잡는다. C3 SET이
+// 지나갈 때는 방금 무엇으로 바꿨는지 알 수 있으므로 그 자리에서 낙관적으로 갱신해,
+// 조회 주기를 기다리지 않고 즉시 반영한다.
+struct CameraModeCache {
+  uint8_t power;      // VISCA CAM_Power:        0x02 On, 0x03 Standby
+  uint8_t aeMode;     // VISCA CAM_AEMode:       0x00 Full Auto, 0x03 Manual, 0x0A/0x0B 우선순위 모드
+  uint8_t wbMode;     // VISCA CAM_WBMode:       0x00 Auto, 0x05 Manual, ...
+  uint8_t focusMode;  // VISCA CAM_FocusAFMode:  0x02 Auto, 0x03 Manual, 0x04 One Push
+};
+// 초기값 = 전부 Auto (VISCA 코드로 AE Full Auto / WB Auto / Focus Auto).
+CameraModeCache modeCache[CAMERA_SLOT_COUNT] = {};
+void resetModeCache() {
+  for (uint8_t i = 0; i < CAMERA_SLOT_COUNT; i++) {
+    modeCache[i].power = 0x02;      // On
+    modeCache[i].aeMode = 0x00;     // Full Auto
+    modeCache[i].wbMode = 0x00;     // Auto
+    modeCache[i].focusMode = 0x02;  // Auto Focus
+  }
+}
+
+// 지금 답을 기다리는 중인 조회. VISCA 조회 응답이 전부 `y0 50 pp FF`로 똑같이 생겨서,
+// 어느 질문의 답인지는 "무엇을 물었는지"를 기억하는 것으로만 알 수 있다.
+enum class ModeInquiry : uint8_t { NONE = 0, POWER, AE, WB, FOCUS };
+#define MODE_INQUIRY_ITEM_COUNT 4
+ModeInquiry pendingInquiry = ModeInquiry::NONE;
+uint8_t pendingInquiryCam = 0;
+unsigned long lastInquiryMs = 0;
+uint8_t inquiryCamCursor = 1;   // 1~7
+uint8_t inquiryItemCursor = 0;  // kInquiryCodes / ModeInquiry 열거와 같은 순서
+
+// C3 SET이 지나가면 그 항목을 다음 조회로 예약한다 - 라운드로빈 한 바퀴를 기다리지 않고
+// 바로 확인해서, 카메라가 명령을 거부했을 때 컨트롤러 표시가 오래 거짓말하지 않게 한다.
+uint8_t priorityInquiryCam = 0;  // 0이면 예약 없음
+uint8_t priorityInquiryItem = 0;
+unsigned long priorityInquiryDueMs = 0;
+
+// 직전에 카메라로 내보낸 번역 결과 - 같은 명령이 연달아 쏟아지는 걸 억제하는 데 쓴다
+// (isDuplicateViscaCommand() 참고).
+uint8_t lastSentCam = 0;
+uint8_t lastSentBuf[VISCA_BUFFER_SIZE];
+uint8_t lastSentLen = 0;
+unsigned long lastSentMs = 0;
+
 // Raw Byte Monitor 화면이 켜져 있는 동안 RS485에서 읽은 바이트를 프로토콜 파싱과
 // 무관하게 그대로 hex로 echo한다. RAW_MONITOR_GAP_MS 이상 새 바이트가 없으면
 // pollRawMonitor()가 줄바꿈으로 끊어서 다음 버스트를 새 줄에 보여준다.
@@ -60,6 +108,30 @@ void pollRawMonitor() {
     Serial.println();
     rawLineOpen = false;
   }
+}
+
+// Raw Byte Monitor에 게이트웨이가 송신한 패킷을 표시한다 (Rs485Port의 TxEcho 훅).
+//
+// echoRawByte()는 RS485에서 "읽어들인" 바이트만 보여주는데, 게이트웨이는 자기가 보낸
+// 바이트를 자기 RX로 되들을 수 없다 - writePacket()이 DE/RE를 송신 쪽으로 올리는 동안
+// 트랜시버의 수신부가 꺼지기 때문이다. 그래서 이 훅이 없으면 우리 응답만 화면에서 통째로
+// 사라져, 다른 카메라 응답은 보이는데 6번(게이트웨이) 응답만 없는 것처럼 보인다.
+//
+// 수신 줄과 섞이지 않도록 열려 있던 [RAW] 줄을 먼저 끊고 별도 라벨로 한 줄에 찍는다.
+void echoRawTxPacket(const uint8_t* data, uint8_t len) {
+  if (!serialMenu.rawMonitorActive()) return;
+
+  if (rawLineOpen) {
+    Serial.println();
+    rawLineOpen = false;
+  }
+  Serial.print("[TX ] ");
+  for (uint8_t i = 0; i < len; i++) {
+    if (data[i] < 0x10) Serial.print('0');
+    Serial.print(data[i], HEX);
+    Serial.print(' ');
+  }
+  Serial.println();
 }
 
 unsigned long lastDiagRawByteMs = 0;
@@ -451,10 +523,44 @@ uint8_t scalePelcoSpeedToVisca(uint8_t pelcoSpeed, uint8_t viscaMax) {
 // sendPelcoDResponse()/sendPelcoPResponse()가 이미 Pelco 포맷으로 담당하고 있어서,
 // 여기서 VISCA 포맷 응답까지 또 보내면 Pelco 컨트롤러 입장에서는 알아볼 수 없는
 // 바이트가 섞여 들어가게 된다.
+// 직전에 보낸 것과 바이트 단위로 완전히 같은 명령이 억제 창 안에 또 들어왔는지 판정한다.
+//
+// Pelco 컨트롤러는 조이스틱을 물고 있는 동안 같은 프레임을 초당 수십 번 계속 재전송한다.
+// 반면 VISCA의 Pan-tiltDrive는 래치 방식이라 한 번 보내면 Stop이 올 때까지 그대로 도는
+// 명령이다. 그래서 그 재전송을 그대로 UDP로 흘리면 카메라 명령 큐가 밀리고, 조이스틱을
+// 놓아도 밀린 명령이 다 소화될 때까지 카메라가 계속 흘러간다.
+//
+// 방향이나 속도가 조금이라도 바뀌면 바이트가 달라져 즉시 통과하므로, Stop을 포함해
+// "새로운 명령"이 지연되는 일은 없다.
+bool isDuplicateViscaCommand(uint8_t camNumber, const uint8_t* buf, uint8_t viscaLen) {
+  if (camNumber != lastSentCam || viscaLen != lastSentLen ||
+      memcmp(buf, lastSentBuf, viscaLen) != 0) {
+    return false;
+  }
+  return (millis() - lastSentMs) < VISCA_DUPLICATE_SUPPRESS_MS;
+}
+
+void rememberSentViscaCommand(uint8_t camNumber, const uint8_t* buf, uint8_t viscaLen) {
+  lastSentCam = camNumber;
+  lastSentLen = (viscaLen < VISCA_BUFFER_SIZE) ? viscaLen : (uint8_t)VISCA_BUFFER_SIZE;
+  memcpy(lastSentBuf, buf, lastSentLen);
+  lastSentMs = millis();
+}
+
 void forwardTranslatedVisca(uint8_t camNumber, uint8_t* viscaBuf, uint8_t viscaLen,
                              const char* debugTag) {
   SystemConfig& cfg = routingTable.get();
   viscaBuf[0] = VISCA_ADDR_CAM1 + (camNumber - 1);
+
+  if (isDuplicateViscaCommand(camNumber, viscaBuf, viscaLen)) {
+    if (cfg.debugMode) {
+      Serial.print("[");
+      Serial.print(debugTag);
+      Serial.println("] Duplicate command suppressed");
+    }
+    return;
+  }
+  rememberSentViscaCommand(camNumber, viscaBuf, viscaLen);
 
   RoutedPacket results[1];
   uint8_t count = routingTable.route(viscaBuf, viscaLen, results, 1);
@@ -507,6 +613,175 @@ void forwardTranslatedVisca(uint8_t camNumber, uint8_t* viscaBuf, uint8_t viscaL
   }
 }
 
+// EDIS C3 SET이 지나갈 때 캐시를 낙관적으로 갱신한다 - 방금 무엇으로 바꿨는지 아니까,
+// VISCA 조회 주기를 기다리지 않고 다음 D3 19 조회에 바로 반영할 수 있다. 카메라가
+// 명령을 거부해서 실제 값이 다르더라도 pollCameraModeInquiries()가 곧 바로잡는다.
+void updateModeCacheFromSet(uint8_t camNumber, uint8_t viscaCode, uint8_t value) {
+  if (camNumber < 1 || camNumber > CAMERA_SLOT_COUNT) return;
+  CameraModeCache& c = modeCache[camNumber - 1];
+  uint8_t item;
+  switch (viscaCode) {
+    case 0x00: c.power = value; item = 0; break;
+    case 0x39: c.aeMode = value; item = 1; break;
+    case 0x35: c.wbMode = value; item = 2; break;
+    case 0x38: c.focusMode = value; item = 3; break;
+    default: return;  // One Push AF(0x18)처럼 모드를 바꾸지 않는 일회성 트리거
+  }
+
+  // 방금 설정한 항목을 곧바로 되물어 실제로 적용됐는지 확인한다.
+  priorityInquiryCam = camNumber;
+  priorityInquiryItem = item;
+  priorityInquiryDueMs = millis() + MODE_INQUIRY_SET_VERIFY_DELAY_MS;
+}
+
+// 게이트웨이가 EDIS 응답을 RS485로 내보낼 때 그 바이트를 그대로 로그에 남긴다.
+//
+// 이게 없으면 응답이 나가는지 눈으로 확인할 방법이 아예 없다 - writePacket()이 DE/RE를
+// 송신 쪽으로 올리는 동안 트랜시버의 수신부가 꺼지므로, 게이트웨이는 자기가 보낸 바이트를
+// 자기 Raw Byte Monitor로 다시 들을 수 없다. 다른 카메라의 응답은 같은 줄에 보이는데
+// 우리 응답만 안 보이는 게 그 때문이다.
+void logEdisResponse(const char* what, const uint8_t* resp, uint8_t len) {
+  if (!routingTable.get().debugMode) return;
+  Serial.print("[TX] ");
+  Serial.print(what);
+  Serial.print(" | ");
+  Serial.println(viscaBytesToHex(resp, len));
+}
+
+// D3 04(전원 상태 조회)에 대한 D7 응답. 모드 상태 조회와 응답 배치가 다르다 -
+// RESP1에 데이터가 실리지 않고 CMND1(0x00)이 그대로 에코되며, DATA2가 VISCA
+// CAM_Power 코드(0x02 On / 0x03 Standby)를 그대로 담는다.
+void sendEdisPowerStatus(uint8_t camNumber) {
+  uint8_t resp[PELCO_D_PACKET_LEN] = {PELCO_D_START_BYTE, camNumber, 0x00,
+                                      PELCO_EDIS_QUERY_RESPONSE, 0x00,
+                                      modeCache[camNumber - 1].power, 0};
+  uint8_t sum = 0;
+  for (uint8_t i = 1; i < PELCO_D_PACKET_LEN - 1; i++) sum += resp[i];
+  resp[PELCO_D_PACKET_LEN - 1] = sum;
+
+  rs485.writePacket(resp, sizeof(resp));
+  diagnostics.recordRs485TxResponse();
+  logEdisResponse("Power status", resp, sizeof(resp));
+}
+
+// D3 19 상태 조회에 대한 D7 응답을 캐시에서 조립해 RS485로 돌려준다.
+// 규격은 실측으로 복원했다 (doc/pelcoD_command.md 참고):
+//
+//   FF ADDR R1 D7 19 D2 CK
+//     R1 = 0x50 | (VISCA WB 모드 코드 & 0x0F)
+//     D2 = (Iris가 Auto가 아니면 0x40) | (Focus가 Auto가 아니면 0x01)
+//     CK = ADDR..D2 합
+void sendEdisModeStatus(uint8_t camNumber) {
+  const CameraModeCache& c = modeCache[camNumber - 1];
+
+  // AWB는 VISCA WB 모드 코드가 그대로 실린다 - 실측에서 Manual이 0x05, Auto가 0x00으로
+  // VISCA CAM_WBModeInq 반환값과 정확히 같았다.
+  uint8_t r1 = PELCO_EDIS_STATUS_RESP1_BASE | (c.wbMode & 0x0F);
+
+  // Iris/Focus는 값 코드가 아니라 단순 Manual 플래그다. 실측 범위가 Auto/Manual 두
+  // 가지뿐이라, "Auto가 아니면 Manual"로 접어서 보낸다 - 컨트롤러 화면 자체가
+  // Auto/Manual 이분법이므로 Shutter/Iris 우선순위 같은 중간 모드도 Manual로 보이는
+  // 게 오히려 사실에 가깝다.
+  uint8_t d2 = 0;
+  if (c.aeMode != 0x00) d2 |= PELCO_EDIS_STATUS_IRIS_MANUAL;
+  if (c.focusMode != 0x02) d2 |= PELCO_EDIS_STATUS_FOCUS_MANUAL;
+
+  uint8_t resp[PELCO_D_PACKET_LEN] = {PELCO_D_START_BYTE, camNumber, r1,
+                                      PELCO_EDIS_QUERY_RESPONSE, PELCO_EDIS_QUERY_MODE_STATUS,
+                                      d2, 0};
+  uint8_t sum = 0;
+  for (uint8_t i = 1; i < PELCO_D_PACKET_LEN - 1; i++) sum += resp[i];
+  resp[PELCO_D_PACKET_LEN - 1] = sum;
+
+  rs485.writePacket(resp, sizeof(resp));
+  diagnostics.recordRs485TxResponse();
+  logEdisResponse("Mode status", resp, sizeof(resp));
+}
+
+// EDIS 벤더 확장(C3 SET / D3 GET)을 처리한다.
+void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, uint8_t data2,
+                              const char* debugTag) {
+  SystemConfig& cfg = routingTable.get();
+
+  if (cmnd2 == PELCO_EDIS_QUERY_CMD) {
+    // 조회에 답하는 건 이 게이트웨이가 담당하는 슬롯 - IP가 설정된 주소 - 뿐이다.
+    // IP가 비어 있는 주소는 같은 버스의 실물 ED-P 카메라 몫이고, 그쪽이 이미
+    // 스스로 답하고 있으므로 여기서 끼어들면 드라이버 두 개가 충돌한다.
+    //
+    // pelcoResponseMode(합성 ACK 설정)와는 무관하게 동작한다. 그건 "명령을 받았다"는
+    // General Response를 지어낼지에 대한 설정이고, 이쪽은 컨트롤러가 명시적으로 값을
+    // 물어본 데 대한 데이터 응답이라 성격이 다르다. 충돌 위험은 위의 슬롯 검사로
+    // 이미 막혀 있다.
+    CameraSlot* slot = routingTable.camera(camNumber);
+    if (slot == nullptr || !slot->isConfigured()) return;
+
+    // 카메라가 켜져 있지 않으면 어떤 조회에도 답하지 않는다 - 실물 ED-P가 스탠바이
+    // 중에 침묵하는 것과 같은 동작이다. 전원 상태는 VISCA CAM_PowerInq(`09 04 00`)를
+    // 주기적으로 던져 확인하고(pollCameraModeInquiries), 컨트롤러가 C3 00으로
+    // 스탠바이를 명령하면 그 자리에서 바로 반영된다.
+    if (modeCache[camNumber - 1].power != 0x02) {
+      if (cfg.debugMode) {
+        Serial.print("[");
+        Serial.print(debugTag);
+        Serial.println("] Query while camera is in standby - no answer");
+      }
+      return;
+    }
+
+    if (data1 == PELCO_EDIS_QUERY_MODE_STATUS) {
+      sendEdisModeStatus(camNumber);
+      if (cfg.debugMode) {
+        Serial.print("[");
+        Serial.print(debugTag);
+        Serial.println("] Mode status query -> answered from cache");
+      }
+      return;
+    }
+    if (data1 == PELCO_EDIS_QUERY_POWER) {
+      sendEdisPowerStatus(camNumber);
+      if (cfg.debugMode) {
+        Serial.print("[");
+        Serial.print(debugTag);
+        Serial.println("] Power status query -> answered from cache");
+      }
+      return;
+    }
+    // 해독하지 못한 조회 항목. 억지로 답을 지어내면 컨트롤러가 잘못된 값을 표시하게
+    // 되므로 침묵한다 - 실물 카메라가 응답하지 않을 때와 같은 상태가 된다.
+    if (cfg.debugMode) {
+      Serial.print("[");
+      Serial.print(debugTag);
+      Serial.print("] Unknown query item 0x");
+      Serial.print(data1, HEX);
+      Serial.println(" - no answer");
+    }
+    return;
+  }
+
+  // SET: DATA1/DATA2가 VISCA `01 04 pp qq`의 pp/qq와 그대로 같다. 다만 실측으로
+  // 확인된 파라미터만 통과시킨다 - 모르는 pp를 그대로 흘리면 엉뚱한 VISCA 명령이
+  // 만들어져 카메라가 예상 못 한 동작을 할 수 있다.
+  bool known = (data1 == 0x00 ||   // CAM_Power        (02 On / 03 Standby)
+                data1 == 0x39 ||   // CAM_AEMode       (00 Full Auto / 03 Manual)
+                data1 == 0x38 ||   // CAM_FocusAFMode  (02 Auto / 03 Manual / 04 One Push)
+                data1 == 0x35 ||   // CAM_WBMode
+                data1 == 0x18);    // CAM_Focus One Push Trigger (일회성)
+  if (!known) {
+    if (cfg.debugMode) {
+      Serial.print("[");
+      Serial.print(debugTag);
+      Serial.print("] Unknown set parameter 0x");
+      Serial.print(data1, HEX);
+      Serial.println(" - ignored");
+    }
+    return;
+  }
+
+  uint8_t buf[6] = {0, 0x01, 0x04, data1, data2, VISCA_TERMINATOR};
+  forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+  updateModeCacheFromSet(camNumber, data1, data2);
+}
+
 // Pelco-D/P Standard/Extended Command를 VISCA 명령으로 변환해서 보낸다.
 // isPelcoP로 CMND1 비트 배치 차이(Focus Near/Far 위치, doc/pelcoP_command.md 4절)만
 // 분기하고, 나머지(Pan/Tilt/Zoom 비트, Preset/Query 옵코드)는 두 프로토콜이 동일한
@@ -514,8 +789,22 @@ void forwardTranslatedVisca(uint8_t camNumber, uint8_t* viscaBuf, uint8_t viscaL
 // 완전히 동일" 참고). doc/pelcoD_command.md 7.1절에서 FoMaKo 자체 지원이 확인된
 // 범위만 구현한다 - Run Group/Swing, Aux, 절대좌표 Set, Focus Position Query는
 // FoMaKo Pelco-D/P 표 자체에 없어서 애초에 구현 대상이 아니다 (같은 문서 10절).
-void translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, uint8_t data1,
+//
+// 호출부는 반환값으로 합성 ACK(General Response)를 보낼지 정한다 - 무시한 명령에 ACK를
+// 돌려주면 "받아서 처리했다"는 거짓 신호가 되고, 계속 들어오는 폴링 명령마다 RS485를
+// 4바이트씩 점유하며 그동안 수신도 막힌다.
+bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, uint8_t data1,
                                uint8_t data2, bool isPelcoP, const char* debugTag) {
+  // EDIS 벤더 확장 (config.h의 PELCO_EDIS_* 참고). Pelco-D에서만 실측했으므로
+  // Pelco-P 입력에는 적용하지 않는다.
+  if (!isPelcoP && cmnd1 == 0x00 &&
+      (cmnd2 == PELCO_EDIS_SET_CMD || cmnd2 == PELCO_EDIS_QUERY_CMD)) {
+    handleEdisVendorCommand(camNumber, cmnd2, data1, data2, debugTag);
+    // SET에도 GET에도 General Response는 보내지 않는다 - 실물 ED-P 카메라가 SET에는
+    // 아무 응답도 하지 않고, GET에는 전용 D7 응답만 돌려주는 게 실측으로 확인됐다.
+    return false;
+  }
+
   // Extended Command(Preset/Query)는 CMND1=0x00 + CMND2가 아래 고정 옵코드값(전부
   // 홀수)일 때만 성립한다. Standard Command 비트 플래그는 CMND2 bit0이 항상 0으로
   // 정의되어 있어(4절) 짝수이므로, 홀수 옵코드와 절대 겹치지 않는다.
@@ -524,14 +813,37 @@ void translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
       uint8_t opcode = (cmnd2 == 0x03) ? 0x01 : (cmnd2 == 0x07) ? 0x02 : 0x00;
       uint8_t buf[7] = {0, 0x01, 0x04, 0x3F, opcode, data2, VISCA_TERMINATOR};
       forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
-      return;
+      return true;
     }
     if (cmnd2 == 0x51 || cmnd2 == 0x53 || cmnd2 == 0x55) {
       // Query Pan/Tilt/Zoom Position: VISCA 조회는 비동기 응답(별도 UDP 패킷)이 와야
       // 완성되는데, 그걸 Pelco Extended Response로 재포장하는 로직은 아직 없다.
       // 요청만 받고 조용히 무시한다 (향후 작업, doc/pelcoD_command.md 10절 참고).
-      return;
+      // 애초에 Query가 기대하는 건 값이 실린 Extended Response지 General Response(ACK)가
+      // 아니므로, 여기서 ACK를 돌려주는 것도 맞지 않는다 - false를 반환한다.
+      return false;
     }
+  }
+
+  // 여기까지 왔는데 CMND2 bit0이 켜져 있으면, 우리가 해석할 줄 모르는 Extended
+  // Command다. Standard Command의 비트 플래그는 CMND2 bit0이 항상 0으로 정의되어
+  // 있으므로(4절), 이걸 아래 모션 비트 디코드로 흘려보내면 옵코드 값이 통째로
+  // Pan/Tilt/Zoom/Focus 비트로 오독된다.
+  //
+  // 실측 사례: ZU-EPC7000이 아이들 상태에서도 계속 보내는 폴링 명령이 CMND2=0xD3인데,
+  // 이게 Pan Right(0x02) + Tilt Down(0x10) + Zoom Wide(0x40) + Focus Far(0x80)로
+  // 해석되어 컨트롤러를 건드리지 않아도 카메라가 오른쪽 아래로 계속 밀렸다. 0xD3은
+  // 표준 Extended 옵코드 표(0x03~0x6F) 밖의 EDIS ED-P 벤더 고유 명령으로 보이며,
+  // 의미를 모르는 확장 명령은 모션으로 오역하느니 무시하는 게 맞다.
+  if (cmnd2 & 0x01) {
+    if (routingTable.get().debugMode) {
+      Serial.print("[");
+      Serial.print(debugTag);
+      Serial.print("] Unknown extended command CMND2=0x");
+      Serial.print(cmnd2, HEX);
+      Serial.println(" - ignored");
+    }
+    return false;
   }
 
   // Stop: 전부 0. 특정 축만 지정할 방법이 없는 패킷이라, Pan/Tilt/Zoom/Focus를
@@ -544,7 +856,7 @@ void translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
     forwardTranslatedVisca(camNumber, stopPT, sizeof(stopPT), debugTag);
     forwardTranslatedVisca(camNumber, stopZoom, sizeof(stopZoom), debugTag);
     forwardTranslatedVisca(camNumber, stopFocus, sizeof(stopFocus), debugTag);
-    return;
+    return true;
   }
 
   bool up = cmnd2 & 0x08, down = cmnd2 & 0x10, left = cmnd2 & 0x04, right = cmnd2 & 0x02;
@@ -557,6 +869,10 @@ void translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
     focusNear = cmnd1 & 0x01;
     focusFar = cmnd2 & 0x80;
   }
+
+  // 아래 세 블록 중 하나라도 실제로 명령을 내보냈는지 - 비트가 하나도 안 켜진
+  // (Stop도 아닌) 패킷이면 아무것도 안 하고 false로 빠져나간다.
+  bool acted = false;
 
   if (up || down || left || right) {
     uint8_t vv = scalePelcoSpeedToVisca(data1, 0x18);
@@ -589,17 +905,34 @@ void translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
     }
     uint8_t buf[9] = {0, 0x01, 0x06, 0x01, vv, ww, p3, p4, VISCA_TERMINATOR};
     forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+    acted = true;
   }
 
   if (zoomTele || zoomWide) {
     uint8_t buf[6] = {0, 0x01, 0x04, 0x07, (uint8_t)(zoomTele ? 0x02 : 0x03), VISCA_TERMINATOR};
     forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+    acted = true;
   }
 
   if (focusNear || focusFar) {
     uint8_t buf[6] = {0, 0x01, 0x04, 0x08, (uint8_t)(focusFar ? 0x02 : 0x03), VISCA_TERMINATOR};
     forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+    acted = true;
   }
+
+  return acted;
+}
+
+// 이 게이트웨이가 "담당하는" 슬롯인지 - 즉 카메라 슬롯 1~7 안이면서 IP까지 설정된
+// 슬롯인지 판정한다. 합성 ACK를 보낼지 말지의 기준이다.
+//
+// RS485는 2선 멀티드롭이라 컨트롤러가 직접 제어하는 실물 Pelco 카메라(EDIS ED-P 등)가
+// 같은 버스에 함께 물려 있을 수 있고, 그 카메라들은 자기 앞으로 온 명령에 스스로
+// 응답한다. 게이트웨이가 주소를 가리지 않고 ACK를 쏘면 드라이버 두 개가 동시에 버스를
+// 물어(bus contention) 컨트롤러가 양쪽 응답을 다 못 읽는다. IP가 설정된 슬롯 = 실물
+// 카메라가 아니라 이 게이트웨이가 IP로 중계하는 대상이므로, 그 주소에만 응답한다.
+bool isOwnedSlot(const CameraSlot* slot) {
+  return slot != nullptr && slot->isConfigured();
 }
 
 // Pelco-D General Response(ACK)를 합성해서 돌려준다. 체크섬은 원본 명령의 체크섬
@@ -620,24 +953,28 @@ void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
     Serial.println(viscaBytesToHex(data, len));
   }
 
-  if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC) {
-    sendPelcoDResponse(data, len);
-    if (cfg.debugMode) {
-      Serial.println("[TX] Pelco-D General Response (ACK)");
-    }
-  }
-
   // Pelco-D ADDR은 실제 주소를 그대로 쓴다 (doc/pelcoD_command.md 2절) - 카메라
   // 슬롯 1~7 밖(8 이상, 0)은 이 프로젝트의 매핑 대상이 아니라 무시한다 (8.2절).
   uint8_t camNumber = data[1];
-  if (camNumber < 1 || camNumber > CAMERA_SLOT_COUNT) {
+  CameraSlot* slot = routingTable.camera(camNumber);  // 1~7 밖이면 nullptr
+
+  if (slot == nullptr) {
     if (cfg.debugMode) {
       Serial.println("[ACTION] Address out of range (1-7) - ignored");
     }
     return;
   }
-  translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5], /*isPelcoP=*/false,
-                            "PELCO-D");
+
+  bool needsAck = translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5],
+                                          /*isPelcoP=*/false, "PELCO-D");
+
+  // ACK는 번역/전달이 실제로 일어난 뒤에, 실제로 처리한 명령에 대해서만 보낸다.
+  if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC && isOwnedSlot(slot) && needsAck) {
+    sendPelcoDResponse(data, len);
+    if (cfg.debugMode) {
+      Serial.println("[TX] Pelco-D General Response (ACK)");
+    }
+  }
 }
 
 // Pelco-P General Response(ACK)를 합성해서 돌려준다. FUJIFILM SX1600 스펙 기준
@@ -659,36 +996,148 @@ void handlePelcoPPacket(const uint8_t* data, uint8_t len) {
     Serial.println(viscaBytesToHex(data, len));
   }
 
-  if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC) {
-    sendPelcoPResponse(data, len);
-    if (cfg.debugMode) {
-      Serial.println("[TX] Pelco-P General Response (ACK)");
-    }
-  }
-
   // Pelco-P ADDR은 "실제 주소 - 1"을 wire에 싣는다 (doc/pelcoP_command.md 1/7절,
   // FUJIFILM SX1600 스펙 "ONE MINUS THE ADDRESS SET BY THE DEVICE") - Pelco-D와
   // 달리 +1 보정이 필요하다. data[1]==254/255처럼 비정상적으로 큰 값이 와도
   // camNumber가 8 이상(또는 0, uint8_t 오버플로우 시)이 되어 아래 범위 검사에서
   // 자연스럽게 걸러진다.
   uint8_t camNumber = data[1] + 1;
-  if (camNumber < 1 || camNumber > CAMERA_SLOT_COUNT) {
+  CameraSlot* slot = routingTable.camera(camNumber);  // 1~7 밖이면 nullptr
+
+  if (slot == nullptr) {
     if (cfg.debugMode) {
       Serial.println("[ACTION] Address out of range (1-7) - ignored");
     }
     return;
   }
-  translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5], /*isPelcoP=*/true,
-                            "PELCO-P");
+
+  bool needsAck = translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5],
+                                          /*isPelcoP=*/true, "PELCO-P");
+
+  // ACK는 번역/전달이 실제로 일어난 뒤에, 실제로 처리한 명령에 대해서만 보낸다.
+  if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC && isOwnedSlot(slot) && needsAck) {
+    sendPelcoPResponse(data, len);
+    if (cfg.debugMode) {
+      Serial.println("[TX] Pelco-P General Response (ACK)");
+    }
+  }
 }
 
-// 카메라로부터의 응답을 non-blocking으로 확인하여, Response Mode가 forward나
-// forward_rewrite일 때 RS485로 전달한다.
+bool isPelcoInput(const SystemConfig& cfg) {
+  return cfg.inputProtocol == InputProtocol::PELCO_D ||
+         cfg.inputProtocol == InputProtocol::PELCO_P ||
+         cfg.inputProtocol == InputProtocol::PELCO_AUTO;
+}
+
+// (카메라, 항목) 하나를 VISCA로 조회한다. 보냈으면 true.
+bool sendModeInquiry(uint8_t camNumber, uint8_t item, const SystemConfig& cfg) {
+  CameraSlot* slot = routingTable.camera(camNumber);
+  if (slot == nullptr || !slot->isConfigured()) return false;
+
+  // ModeInquiry의 열거 순서(POWER, AE, WB, FOCUS)와 같은 순서여야 한다.
+  static const uint8_t kInquiryCodes[MODE_INQUIRY_ITEM_COUNT] = {0x00, 0x39, 0x35, 0x38};
+  uint8_t buf[5] = {(uint8_t)(VISCA_ADDR_CAM1 + camNumber - 1), 0x09, 0x04,
+                    kInquiryCodes[item], VISCA_TERMINATOR};
+
+  // 명령과 같은 경로(routingTable.route)를 태워야 슬롯의 Address Mode가 조회에도
+  // 똑같이 적용된다. 직접 보내면 Address Mode가 rewrite_0x81인 슬롯에서 명령은
+  // 0x81로, 조회는 0x86으로 나가 카메라가 조회만 무시하는 상황이 생긴다.
+  RoutedPacket routed[1];
+  if (routingTable.route(buf, sizeof(buf), routed, 1) == 0) return false;
+  if (!sendToCamera(*routed[0].slot, routed[0].output, routed[0].outputLen)) return false;
+
+  if (cfg.debugMode) {
+    Serial.print("[MODE] CAM");
+    Serial.print(camNumber);
+    Serial.print(" -> ");
+    Serial.println(viscaBytesToHex(routed[0].output, routed[0].outputLen));
+  }
+
+  pendingInquiry = (ModeInquiry)(item + 1);  // NONE 다음이 POWER
+  pendingInquiryCam = camNumber;
+  lastInquiryMs = millis();
+  return true;
+}
+
+// 카메라의 전원/AE/WB/Focus 모드를 VISCA로 하나씩 조회해 modeCache를 채운다. 네 조회의
+// 응답이 전부 `y0 50 pp FF`로 똑같이 생겨서 동시에 던지면 구분할 수 없으므로, 답을
+// 받거나 타임아웃될 때까지 다음 조회를 보내지 않는다. 설정된 슬롯들을 (카메라, 항목)
+// 쌍으로 라운드로빈하되, C3 SET 직후에는 그 항목을 먼저 확인한다.
+void pollCameraModeInquiries() {
+  SystemConfig& cfg = routingTable.get();
+  if (!isPelcoInput(cfg) || WiFi.status() != WL_CONNECTED) return;
+
+  unsigned long now = millis();
+
+  if (pendingInquiry != ModeInquiry::NONE) {
+    if (now - lastInquiryMs < MODE_INQUIRY_TIMEOUT_MS) return;
+    // 응답 없음 - 이 항목은 이번 회차를 포기하고 다음으로 넘어간다. 카메라가 조회를
+    // 지원하지 않아도 여기서 자연스럽게 흘러가고, 캐시는 마지막으로 알던 값을 유지한다.
+    //
+    // 다만 이게 계속 반복되면 캐시가 C3 SET이 설정한 낙관적 값에만 머문다는 뜻이라,
+    // 카메라가 명령을 거부했을 때 컨트롤러 표시와 실제 상태가 어긋난다. 원인을 눈으로
+    // 볼 수 있도록 타임아웃을 로그로 남긴다.
+    if (cfg.debugMode) {
+      Serial.print("[MODE] CAM");
+      Serial.print(pendingInquiryCam);
+      Serial.println(" inquiry timed out - no reply");
+    }
+    pendingInquiry = ModeInquiry::NONE;
+  }
+
+  // C3 SET 직후 예약된 확인 조회는 라운드로빈 순서를 건너뛰고 먼저 나간다.
+  bool priorityDue = (priorityInquiryCam != 0 && (long)(now - priorityInquiryDueMs) >= 0);
+  if (!priorityDue && now - lastInquiryMs < MODE_INQUIRY_INTERVAL_MS) return;
+
+  if (priorityDue) {
+    uint8_t cam = priorityInquiryCam;
+    uint8_t item = priorityInquiryItem;
+    priorityInquiryCam = 0;
+    if (sendModeInquiry(cam, item, cfg)) return;
+    // 못 보냈으면(슬롯 미설정 등) 그냥 아래 라운드로빈으로 넘어간다.
+  }
+
+  // 다음 (카메라, 항목) 쌍으로 커서를 옮긴다. 항목을 다 돌면 다음 카메라로.
+  for (uint8_t tries = 0; tries < CAMERA_SLOT_COUNT * MODE_INQUIRY_ITEM_COUNT; tries++) {
+    inquiryItemCursor++;
+    if (inquiryItemCursor >= MODE_INQUIRY_ITEM_COUNT) {
+      inquiryItemCursor = 0;
+      inquiryCamCursor = (inquiryCamCursor % CAMERA_SLOT_COUNT) + 1;
+    }
+    if (sendModeInquiry(inquiryCamCursor, inquiryItemCursor, cfg)) return;
+  }
+}
+
+// 카메라 응답이 우리가 던진 모드 조회의 답이면 캐시를 갱신하고 true를 반환한다.
+// VISCA 조회 응답은 `y0 50 pp FF` 4바이트다 - ACK(`y0 41 FF`)나 Completion
+// (`y0 51 FF`)은 3바이트라 길이와 두 번째 바이트로 구분된다.
+bool consumeModeInquiryReply(uint8_t camNumber, const uint8_t* buf, uint8_t len) {
+  if (pendingInquiry == ModeInquiry::NONE || pendingInquiryCam != camNumber) return false;
+  if (len != 4 || buf[1] != 0x50 || buf[3] != VISCA_TERMINATOR) return false;
+
+  CameraModeCache& c = modeCache[camNumber - 1];
+  switch (pendingInquiry) {
+    case ModeInquiry::POWER: c.power = buf[2]; break;
+    case ModeInquiry::AE: c.aeMode = buf[2]; break;
+    case ModeInquiry::WB: c.wbMode = buf[2]; break;
+    case ModeInquiry::FOCUS: c.focusMode = buf[2]; break;
+    default: break;
+  }
+  pendingInquiry = ModeInquiry::NONE;
+  return true;
+}
+
+// 카메라로부터의 응답을 non-blocking으로 확인한다. 모드 조회 답변은 캐시로 흡수하고,
+// 나머지는 Response Mode가 forward/forward_rewrite일 때 RS485로 전달한다.
 void pollCameraResponses() {
   SystemConfig& cfg = routingTable.get();
-  if (cfg.responseMode != ResponseMode::FORWARD && cfg.responseMode != ResponseMode::FORWARD_REWRITE) {
-    return;
-  }
+  bool pelcoInput = isPelcoInput(cfg);
+  bool wantForward = (cfg.responseMode == ResponseMode::FORWARD ||
+                      cfg.responseMode == ResponseMode::FORWARD_REWRITE);
+
+  // Pelco 입력에서는 D3 19 상태 응답을 만들기 위해 모드 조회 답변을 반드시 읽어야
+  // 하므로, Response Mode와 무관하게 UDP를 확인한다.
+  if (!wantForward && !pelcoInput) return;
 
   uint8_t buf[VISCA_BUFFER_SIZE];
   IPAddress remoteIp;
@@ -700,6 +1149,42 @@ void pollCameraResponses() {
   for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
     CameraSlot* slot = routingTable.camera(camNumber);
     if (!slot->isConfigured() || slot->ip.toIPAddress() != remoteIp) continue;
+
+    if (consumeModeInquiryReply(camNumber, buf, len)) {
+      if (cfg.debugMode) {
+        Serial.print("[MODE] CAM");
+        Serial.print(camNumber);
+        Serial.print(" <- ");
+        Serial.println(viscaBytesToHex(buf, len));
+      }
+      return;
+    }
+
+    // 입력이 Pelco 계열이면 raw VISCA 바이트를 RS485로 내보내지 않는다. 두 가지 이유다.
+    //
+    // 1) 컨트롤러가 해석하지 못한다. Pelco 컨트롤러는 Pelco 응답 포맷을 기대하는데
+    //    VISCA ACK/Completion(`z0 41 FF`/`z0 51 FF`)은 전혀 다른 체계다.
+    // 2) 더 나쁜 건 버스 오염이다. VISCA 응답의 종료 바이트 0xFF가 Pelco-D의 SYNC
+    //    바이트와 같아서, 같은 RS485 버스에 물린 다른 Pelco 장비(컨트롤러가 직접
+    //    제어하는 실물 카메라)가 그 자리에서 새 프레임을 시작해버린다. 그러면 뒤이어
+    //    오는 진짜 명령의 앞부분을 그 유령 프레임이 삼켜서 통째로 깨진다.
+    //
+    // 어차피 Pelco 쪽 ACK은 sendPelcoDResponse()/sendPelcoPResponse()가 이미 즉시
+    // 합성해서 돌려주고 있어, VISCA ACK/Completion을 중계해봐야 컨트롤러에 새로 줄
+    // 정보가 없다. 값이 실린 조회 응답(위치 질의 등)을 Pelco Extended Response로
+    // 재포장하는 건 별도 작업이다 (doc/pelcoD_command.md 10절).
+    //
+    // 진단 목적은 유지한다 - Debug Mode에서는 받은 바이트를 그대로 보여준다.
+    if (pelcoInput) {
+      if (cfg.debugMode) {
+        Serial.print("Camera response from ");
+        Serial.print(remoteIp);
+        Serial.print(": ");
+        Serial.print(viscaBytesToHex(buf, len));
+        Serial.println("  (not forwarded - raw VISCA would corrupt the Pelco bus)");
+      }
+      return;
+    }
 
     if (cfg.responseMode == ResponseMode::FORWARD_REWRITE && len > 0) {
       buf[0] = 0x90 | camNumber;
@@ -802,7 +1287,12 @@ void setup() {
   // 다시 초기화하게 되어 충돌한다. 이 모드에서는 부팅 배너도 찍지 않는다 (Serial이
   // 콘솔이 아니라 RS485 데이터 라인이므로).
   if (!cfg.rs485Uart0Shared) {
-    Serial.begin(9600);  // UART0: USB Serial 메뉴/디버그 전용
+    // UART0: USB Serial 메뉴/디버그 전용. RS485 쪽 속도(보통 9600)와 무관하게 최대한
+    // 빠르게 잡는다 - Debug Mode에서 패킷당 170자 가까이 찍는데, 9600bps면 그것만으로
+    // 약 177ms가 걸리고 Serial.print()는 TX 버퍼가 차면 블로킹하므로 그동안 loop()가
+    // 멈춰 RS485 수신 바이트를 놓친다. Stop 명령이 유실되면 카메라가 안 멈춘다.
+    // 115200이면 같은 출력이 약 15ms로 줄어든다.
+    Serial.begin(SERIAL_CONSOLE_BAUD);
     delay(200);
     // 부팅 배너를 일부러 찍지 않는다 - 리셋 직후 Serial 메뉴가 잠금 해제(Enter 두 번)
     // 되기 전까지는 어떤 메시지도 안 보내는 게 의도다. connectWifi()/maintainWifi()도
@@ -811,13 +1301,15 @@ void setup() {
 
   diagnostics.begin();
   statusLed.begin(cfg.statusLedPin);
+  resetModeCache();
 
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
-              cfg.rs485Uart0Shared);
+              cfg.rs485Uart0Shared, cfg.rs485Invert);
+  rs485.setTxEcho(echoRawTxPacket);
 
   connectWifi();
 
-  ipViscaClient.begin();
+  ipViscaClient.begin(DEFAULT_CAMERA_PORT);
   sonyViscaClient.begin();
 
   serialMenu.begin();
@@ -913,4 +1405,5 @@ void loop() {
   }
 
   pollCameraResponses();
+  pollCameraModeInquiries();
 }

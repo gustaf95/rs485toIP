@@ -286,6 +286,14 @@ String WebConfigServer::rs485PageBody(const String& error) {
             String(cfg.rs485DeRePin) + "\"></label>";
   }
 
+  body += "<label>Signal Inversion: <select name=\"invert\">";
+  body += selectOption(1, cfg.rs485Invert ? 1 : 0, "Inverted (A/B swapped wiring)");
+  body += selectOption(0, cfg.rs485Invert ? 1 : 0, "Normal");
+  body += "</select></label>";
+  if (cfg.rs485Uart0Shared) {
+    body += "<p><i>In UART0 Shared Mode this also inverts the USB console signals.</i></p>";
+  }
+
   body += "<label>Input Protocol: <select name=\"input_protocol\">";
   body += selectOption(0, (int)cfg.inputProtocol, "VISCA");
   body += selectOption(1, (int)cfg.inputProtocol, "Pelco-D");
@@ -298,6 +306,15 @@ String WebConfigServer::rs485PageBody(const String& error) {
   body += selectOption(0, (int)cfg.pelcoResponseMode, "Respond (synthetic ACK)");
   body += selectOption(1, (int)cfg.pelcoResponseMode, "No response");
   body += "</select></label>";
+
+  body += "<label>Camera Response Mode: <select name=\"response_mode\">";
+  body += selectOption(0, (int)cfg.responseMode, "none - drop camera responses");
+  body += selectOption(1, (int)cfg.responseMode, "synthetic - fake ACK/Completion (VISCA input only)");
+  body += selectOption(2, (int)cfg.responseMode, "forward - camera bytes to RS485 as-is");
+  body += selectOption(3, (int)cfg.responseMode, "forward_rewrite - forward, rewrite address to 0x9n");
+  body += "</select></label>";
+  body += "<p><i>forward/forward_rewrite send RAW VISCA bytes. A Pelco-D/P controller cannot "
+          "parse those - repackaging into a Pelco response is not implemented yet.</i></p>";
 
   body += "<label>Status LED Pin: <input type=\"number\" name=\"led_pin\" value=\"" +
           String(cfg.statusLedPin) + "\"></label>";
@@ -353,13 +370,15 @@ void WebConfigServer::handleRs485Post() {
   }
 
   cfg.rs485Baudrate = (uint32_t)_server.arg("baudrate").toInt();
+  cfg.rs485Invert = (_server.arg("invert").toInt() != 0);
   cfg.inputProtocol = (InputProtocol)_server.arg("input_protocol").toInt();
   cfg.pelcoResponseMode = (PelcoResponseMode)_server.arg("pelco_response").toInt();
+  cfg.responseMode = (ResponseMode)_server.arg("response_mode").toInt();
   cfg.statusLedPin = (uint8_t)ledPin;
 
   _storage.save(cfg);
   _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
-               cfg.rs485Uart0Shared);
+               cfg.rs485Uart0Shared, cfg.rs485Invert);
   _statusLed.begin(cfg.statusLedPin);
 
   redirectTo(anyStrapping ? "/rs485?warn=strap" : "/rs485");
