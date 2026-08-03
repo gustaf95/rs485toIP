@@ -579,6 +579,20 @@ void WebConfigServer::handleDebugGet() {
   body += "<p><a href=\"/debug/live\">Live Packet Monitor</a> | "
           "<a href=\"/debug/raw\">Raw Byte Monitor</a></p>";
 
+  body += "<h3>Unhandled Commands</h3>";
+  body += "<p>Camera-ID-addressed commands the gateway couldn't translate or hasn't implemented "
+          "yet. Recorded even while Debug Mode is OFF; repeats of the exact same command collapse "
+          "into one line with a count instead of filling up the list.</p><pre>";
+  uint8_t unhandledCount = _diagnostics.unhandledCount();
+  if (unhandledCount == 0) {
+    body += "(none yet)";
+  } else {
+    for (uint8_t i = 0; i < unhandledCount; i++) {
+      body += htmlEscape(_diagnostics.unhandledEntry(i)) + "\n";
+    }
+  }
+  body += "</pre>";
+
   body += "<h3>Send Test Command</h3>";
   body += "<p>Sends a Query Pan Position command (address 1) out on RS485, then jumps to the "
           "Raw Byte Monitor so you can see whether anything responds.</p>";

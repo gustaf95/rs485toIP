@@ -81,6 +81,35 @@ void Diagnostics::recordWifiReconnect() {
   _wifiReconnect++;
 }
 
+void Diagnostics::recordUnhandledPacket(uint8_t camNumber, const String& reason,
+                                         const uint8_t* raw, uint8_t rawLen) {
+  String signature = "CAM" + String(camNumber) + " | " + reason + " | " + viscaBytesToHex(raw, rawLen);
+
+  for (uint8_t i = 0; i < _unhandledUsed; i++) {
+    if (_unhandled[i].signature == signature) {
+      _unhandled[i].count++;
+      UnhandledEntry moved = _unhandled[i];
+      for (uint8_t j = i; j > 0; j--) _unhandled[j] = _unhandled[j - 1];
+      _unhandled[0] = moved;
+      return;
+    }
+  }
+
+  uint8_t last = (_unhandledUsed < DIAG_UNHANDLED_LOG_DEPTH) ? _unhandledUsed
+                                                              : (uint8_t)(DIAG_UNHANDLED_LOG_DEPTH - 1);
+  for (uint8_t j = last; j > 0; j--) _unhandled[j] = _unhandled[j - 1];
+  _unhandled[0].signature = signature;
+  _unhandled[0].count = 1;
+  if (_unhandledUsed < DIAG_UNHANDLED_LOG_DEPTH) _unhandledUsed++;
+}
+
+String Diagnostics::unhandledEntry(uint8_t index) const {
+  if (index >= _unhandledUsed) return "";
+  const UnhandledEntry& e = _unhandled[index];
+  if (e.count <= 1) return e.signature;
+  return e.signature + "  (x" + String(e.count) + ")";
+}
+
 void Diagnostics::resetCounters() {
   _rs485RxTotal = 0;
   _forwarded = 0;

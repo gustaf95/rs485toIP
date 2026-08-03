@@ -730,6 +730,7 @@ void SerialMenu::printDebugMenu() {
   Serial.println("  4. Live Packet Monitor");
   Serial.println("  5. Raw Byte Monitor");
   Serial.println("  6. Send Test Command");
+  Serial.println("  7. Show Unhandled Commands");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -771,6 +772,17 @@ void SerialMenu::handleDebugMenu(const String& line) {
     Serial.println("2. Pelco-P");
     Serial.print("> ");
     _prompt = Prompt::DEBUG_TEST_CMD_PROTOCOL_CHOICE;
+  } else if (line == "7") {
+    Serial.println("---- Unhandled commands (most recent first, Debug Mode not required) ----");
+    uint8_t count = _diagnostics.unhandledCount();
+    if (count == 0) {
+      Serial.println("(none yet)");
+    } else {
+      for (uint8_t i = 0; i < count; i++) {
+        Serial.println(_diagnostics.unhandledEntry(i));
+      }
+    }
+    printDebugMenu();
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();

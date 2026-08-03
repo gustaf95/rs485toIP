@@ -156,6 +156,12 @@
 // Raw byte 로그는 파싱된 RX/TX 로그(DIAG_LOG_DEPTH)와 별도 링버퍼를 쓴다 - 그렇지
 // 않으면 raw 트래픽이 잦을 때 유의미한 패킷 로그가 금방 밀려난다.
 #define DIAG_RAW_LOG_DEPTH 20
+// 라우팅 테이블 카메라 ID(1~7)로 들어왔지만 게이트웨이가 해석하지 못했거나 아직
+// 구현하지 않은 명령의 최근 기록. Debug Mode를 안 켜놔도 나중에 와서 확인할 수 있게
+// 하는 게 목적이라 위 두 로그보다 깊이가 얕다 - 완전히 같은 카메라+원본 바이트가
+// 반복되면 새 항목을 추가하지 않고 발생 횟수만 올리므로(Diagnostics::recordUnhandledPacket
+// 참고), 10개면 서로 다른 미해석 명령 10가지를 담기에 충분하다.
+#define DIAG_UNHANDLED_LOG_DEPTH 10
 
 // ---- Raw Byte Monitor ----
 // Live Packet Monitor와 달리 프로토콜 파싱/체크섬 결과와 무관하게 RS485로 들어오는

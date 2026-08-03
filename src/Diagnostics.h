@@ -53,6 +53,18 @@ class Diagnostics {
   const String* recentRawLog() const { return _recentRawLog; }
   uint8_t recentRawLogDepth() const { return DIAG_RAW_LOG_DEPTH; }
 
+  // 라우팅 테이블 카메라 ID(1~7)로 들어왔지만 게이트웨이가 해석하지 못했거나(Unknown
+  // query/set/extended command) 아직 구현하지 않은(Query Position) 패킷을 기록한다.
+  // 카메라+원본 바이트가 완전히 같은 게 반복되면(컨트롤러의 폴링 재전송 등) 새 항목을
+  // 추가하지 않고 기존 항목의 발생 횟수만 올린 뒤 최신순으로 끌어올린다 - 그래야 매초
+  // 반복되는 같은 미해석 명령 하나가 버퍼(DIAG_UNHANDLED_LOG_DEPTH칸)를 전부
+  // 잠식하지 않는다.
+  void recordUnhandledPacket(uint8_t camNumber, const String& reason, const uint8_t* raw,
+                              uint8_t rawLen);
+  uint8_t unhandledCount() const { return _unhandledUsed; }
+  // index 0이 가장 최근. 반복 횟수가 1보다 크면 "(x N)"을 덧붙인다.
+  String unhandledEntry(uint8_t index) const;
+
  private:
   uint32_t _rs485RxTotal = 0;
   uint32_t _forwarded = 0;
@@ -69,4 +81,13 @@ class Diagnostics {
 
   String _recentLog[DIAG_LOG_DEPTH];
   String _recentRawLog[DIAG_RAW_LOG_DEPTH];
+
+  // signature가 중복 판정 키(카메라+사유+원본 바이트, 발생 시각/횟수는 제외)를 겸한다 -
+  // recordUnhandledPacket()이 이 문자열로 기존 항목을 찾는다.
+  struct UnhandledEntry {
+    String signature;
+    uint32_t count;
+  };
+  UnhandledEntry _unhandled[DIAG_UNHANDLED_LOG_DEPTH];
+  uint8_t _unhandledUsed = 0;
 };

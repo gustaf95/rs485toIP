@@ -744,7 +744,7 @@ void sendEdisModeStatus(uint8_t camNumber) {
 
 // EDIS 벤더 확장(C3 SET / D3 GET)을 처리한다.
 void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, uint8_t data2,
-                              const char* debugTag) {
+                              const uint8_t* rawPacket, uint8_t rawLen, const char* debugTag) {
   SystemConfig& cfg = routingTable.get();
 
   if (cmnd2 == PELCO_EDIS_QUERY_CMD) {
@@ -799,6 +799,11 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
       Serial.print(data1, HEX);
       Serial.println(" - no answer");
     }
+    {
+      char reason[32];
+      snprintf(reason, sizeof(reason), "Unknown query item 0x%02X", data1);
+      diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
+    }
     return;
   }
 
@@ -817,6 +822,11 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
       Serial.print("] Unknown set parameter 0x");
       Serial.print(data1, HEX);
       Serial.println(" - ignored");
+    }
+    {
+      char reason[32];
+      snprintf(reason, sizeof(reason), "Unknown set parameter 0x%02X", data1);
+      diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
     }
     return;
   }
@@ -838,12 +848,13 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
 // 돌려주면 "받아서 처리했다"는 거짓 신호가 되고, 계속 들어오는 폴링 명령마다 RS485를
 // 4바이트씩 점유하며 그동안 수신도 막힌다.
 bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, uint8_t data1,
-                               uint8_t data2, bool isPelcoP, const char* debugTag) {
+                               uint8_t data2, bool isPelcoP, const uint8_t* rawPacket,
+                               uint8_t rawLen, const char* debugTag) {
   // EDIS 벤더 확장 (config.h의 PELCO_EDIS_* 참고). Pelco-D에서만 실측했으므로
   // Pelco-P 입력에는 적용하지 않는다.
   if (!isPelcoP && cmnd1 == 0x00 &&
       (cmnd2 == PELCO_EDIS_SET_CMD || cmnd2 == PELCO_EDIS_QUERY_CMD)) {
-    handleEdisVendorCommand(camNumber, cmnd2, data1, data2, debugTag);
+    handleEdisVendorCommand(camNumber, cmnd2, data1, data2, rawPacket, rawLen, debugTag);
     // SET에도 GET에도 General Response는 보내지 않는다 - 실물 ED-P 카메라가 SET에는
     // 아무 응답도 하지 않고, GET에는 전용 D7 응답만 돌려주는 게 실측으로 확인됐다.
     return false;
@@ -865,6 +876,9 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
       // 요청만 받고 조용히 무시한다 (향후 작업, doc/pelcoD_command.md 10절 참고).
       // 애초에 Query가 기대하는 건 값이 실린 Extended Response지 General Response(ACK)가
       // 아니므로, 여기서 ACK를 돌려주는 것도 맞지 않는다 - false를 반환한다.
+      char reason[40];
+      snprintf(reason, sizeof(reason), "Query Position not implemented (CMND2=0x%02X)", cmnd2);
+      diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
       return false;
     }
   }
@@ -886,6 +900,11 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
       Serial.print("] Unknown extended command CMND2=0x");
       Serial.print(cmnd2, HEX);
       Serial.println(" - ignored");
+    }
+    {
+      char reason[40];
+      snprintf(reason, sizeof(reason), "Unknown extended command CMND2=0x%02X", cmnd2);
+      diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
     }
     return false;
   }
@@ -1011,7 +1030,7 @@ void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
   }
 
   bool needsAck = translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5],
-                                          /*isPelcoP=*/false, "PELCO-D");
+                                          /*isPelcoP=*/false, data, len, "PELCO-D");
 
   // ACK는 번역/전달이 실제로 일어난 뒤에, 실제로 처리한 명령에 대해서만 보낸다.
   if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC && isOwnedSlot(slot) && needsAck) {
@@ -1058,7 +1077,7 @@ void handlePelcoPPacket(const uint8_t* data, uint8_t len) {
   }
 
   bool needsAck = translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5],
-                                          /*isPelcoP=*/true, "PELCO-P");
+                                          /*isPelcoP=*/true, data, len, "PELCO-P");
 
   // ACK는 번역/전달이 실제로 일어난 뒤에, 실제로 처리한 명령에 대해서만 보낸다.
   if (cfg.pelcoResponseMode == PelcoResponseMode::SYNTHETIC && isOwnedSlot(slot) && needsAck) {
