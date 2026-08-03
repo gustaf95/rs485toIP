@@ -128,7 +128,7 @@ struct SystemConfig {
   // true면 UART 신호(RX/TX 양쪽)를 반전시킨다 - RS485 A/B(D+/D-)가 뒤집혀 결선된
   // 배선을 소프트웨어로 보정하는 용도다. 하드웨어에서 A/B를 바로잡는 게 정석이지만,
   // 결선을 손댈 수 없는 현장에서는 이 옵션이 유일한 해법이라 설정으로 노출한다.
-  // 기본값은 RS485_INVERT_DEFAULT(true).
+  // 기본값은 RS485_INVERT_DEFAULT(false, 정상 결선 가정).
   bool rs485Invert;
   // true면 RS485가 UART0(Serial)를 공유한다 - RX/TX/DE-RE가 config.h의
   // RS485_UART0_SHARED_* 값으로 고정되고, Serial 메뉴와 Serial 기반 디버그 로깅이

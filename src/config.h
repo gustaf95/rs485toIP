@@ -8,12 +8,11 @@
 #define RS485_DE_RE_PIN_DEFAULT 27
 #define RS485_BAUD_DEFAULT 9600
 
-// UART 신호 반전 여부의 초기 기본값. 이 프로젝트가 상대하는 배선에서는 RS485
-// A/B(D+/D-)가 뒤집힌 채로 들어와서, 반전을 켜지 않으면 수신 바이트가 전부
-// 깨진다(0xFF 프레임이 0x00으로 읽히고 나머지는 한 비트씩 밀린 보수값이 된다).
-// 그래서 기본값을 true로 둔다 - A/B를 정상 결선한 보드에서는 RS485 Settings
-// 화면에서 꺼야 한다 (RoutingTable::applyDefaults() 참고).
-#define RS485_INVERT_DEFAULT true
+// UART 신호 반전 여부의 초기 기본값. A/B(D+/D-)가 뒤집혀 결선된 배선에서는 이걸 켜야
+// 수신 바이트가 안 깨진다(0xFF 프레임이 0x00으로 읽히고 나머지는 한 비트씩 밀린 보수값이
+// 된다) - 그런 배선이면 RS485 Settings 화면에서 켜야 한다 (RoutingTable::applyDefaults()
+// 참고). 정상 결선(A/B 안 뒤집힘)이 기본 가정이라 false로 둔다.
+#define RS485_INVERT_DEFAULT false
 
 // USB 콘솔(UART0)의 속도. RS485 속도와 무관하며, Debug Mode 로그가 loop()를 오래
 // 붙잡지 않도록 최대한 빠르게 잡는다 (main.cpp setup()의 주석 참고). 이 값을 바꾸면

@@ -360,17 +360,24 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | Static IP             | 고정 IP 사용 시 ESP32 IP | 없음                                           |
 | Gateway               | Gateway                  | 없음                                           |
 | Subnet Mask           | Subnet                   | 없음                                           |
+| AP SSID               | Web Config Server AP 이름 | `RS485Gateway-XXXX` (XXXX=MAC 뒷자리 4자리)   |
+| AP Password           | Web Config Server AP 비밀번호 | `config.h`의 `AP_PASSWORD_DEFAULT`        |
 | RS485 Baudrate        | RS485 속도               | 9600                                           |
 | RS485 RX Pin          | UART2 RX                 | GPIO25                                         |
 | RS485 TX Pin          | UART2 TX                 | GPIO26                                         |
 | RS485 DE/RE Pin       | 방향 제어 핀             | GPIO27                                         |
-| RS485 Signal Inversion | UART 신호 극성 반전     | Inverted (A/B 반전 결선 보정)                  |
+| RS485 Signal Inversion | UART 신호 극성 반전     | off (정상 결선 가정, A/B 반전 배선이면 켜야 함) |
+| RS485 UART0 Shared Mode | RS485가 UART0(Serial) 공유 여부 | off                                 |
+| Status LED Pin        | 상태 LED 핀              | GPIO13                                         |
+| Input Protocol        | RS485 입력 프로토콜      | Pelco-D                                        |
+| Pelco Response Mode   | Pelco ACK 합성 여부      | none (응답 안 함)                              |
 | Camera 1 IP           | CAM1 IP                  | empty                                          |
 | Camera 1 Port         | CAM1 Port                | 5678                                           |
 | Camera 1 Protocol     | CAM1 Protocol            | IP_VISCA_RAW_UDP                               |
 | Camera 1 Address Mode | CAM1 Address Mode        | preserve                                       |
-| Camera 2~7 설정       | 위와 동일                | empty / 5678 / IP_VISCA_RAW_UDP / preserve     |
-| Response Mode         | 응답 처리 모드           | none                                           |
+| Camera 1 Auto Power Control | CAM1 전원 자동 제어 | off                                            |
+| Camera 2~7 설정       | 위와 동일                | empty / 5678 / IP_VISCA_RAW_UDP / preserve / off |
+| Response Mode         | 카메라 응답 처리 모드    | none                                           |
 | Debug Mode            | 디버그 출력 여부         | off                                            |
 
 ---
@@ -557,7 +564,7 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   DE/RE Pin        : GPIO27
   Baudrate         : 9600
   Format           : 8N1
-  Signal Inversion : Inverted (A/B swapped wiring)
+  Signal Inversion : Normal
   Default Mode     : Receive
   Input Protocol   : Pelco-D
   Pelco Response   : No response
@@ -583,12 +590,12 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
 Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART2에 재적용되며,
 별도의 저장 메뉴는 없다.
 
-"9. Set Signal Inversion"은 UART 신호의 극성을 뒤집는다. 기본값은 **Inverted**이다 — 이
-프로젝트가 상대하는 배선에서 RS485 A/B(D+/D-)가 뒤집힌 채로 들어오는 것이 확인되어, 신규
-설치 시 바로 맞는 쪽을 기본값으로 삼았다. 반전이 안 맞으면 수신 바이트가 전부 깨지는데,
-증상이 특징적이다 — 0xFF로 시작해야 할 Pelco-D 프레임이 `00`으로 시작하고, 뒤 바이트들은
-한 비트씩 밀린 보수값이 되어 12.5 Live Packet Monitor에 `00 BE 59 DF 45` 같은 패턴이
-반복해서 찍힌다. 값을 선택하는 즉시 flash에 저장되고 UART에 재적용된다(재부팅 불필요).
+"9. Set Signal Inversion"은 UART 신호의 극성을 뒤집는다. 기본값은 **Normal**이다 — 정상
+결선(A/B 안 뒤집힘)을 기본 가정으로 삼는다. RS485 A/B(D+/D-)가 뒤집혀 결선된 배선이면
+Inverted로 바꿔야 한다. 반전이 안 맞으면 수신 바이트가 전부 깨지는데, 증상이 특징적이다 —
+0xFF로 시작해야 할 Pelco-D 프레임이 `00`으로 시작하고, 뒤 바이트들은 한 비트씩 밀린
+보수값이 되어 12.5 Live Packet Monitor에 `00 BE 59 DF 45` 같은 패턴이 반복해서 찍힌다.
+값을 선택하는 즉시 flash에 저장되고 UART에 재적용된다(재부팅 불필요).
 
 ESP32 UART는 이 플래그 하나로 RXD/TXD를 함께 반전시키므로 수신뿐 아니라 합성 ACK 송신도
 같은 극성으로 나간다. A/B가 뒤집힌 버스에서는 양방향 모두 이게 맞다. 정석은 하드웨어에서
