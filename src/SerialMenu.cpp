@@ -604,6 +604,8 @@ void SerialMenu::printCameraDetailMenu() {
   Serial.println(protocolName(slot->protocol));
   Serial.print("  Address Mode     : ");
   Serial.println(addressModeName(slot->addressMode));
+  Serial.print("  Auto Power Ctrl  : ");
+  Serial.println(slot->autoPowerControl ? "On" : "Off");
   Serial.println();
   Serial.println("------------------------------------------------------------");
   Serial.println(" Options");
@@ -613,6 +615,7 @@ void SerialMenu::printCameraDetailMenu() {
   Serial.println("  3. Set Camera Port");
   Serial.println("  4. Set Protocol");
   Serial.println("  5. Set Address Mode");
+  Serial.println("  6. Toggle Auto Power Control");
   Serial.println("  0. Back to Routing Table");
   Serial.print("> ");
 }
@@ -642,6 +645,13 @@ void SerialMenu::handleCameraDetailMenu(const String& line) {
     Serial.println("3. rewrite_by_cam");
     Serial.print("> ");
     _prompt = Prompt::ROUTING_SET_ADDRMODE_VALUE;
+  } else if (line == "6") {
+    CameraSlot* slot = _routing.camera(_pendingCamNumber);
+    slot->autoPowerControl = !slot->autoPowerControl;
+    _storage.save(_routing.get());
+    Serial.println(slot->autoPowerControl ? "Auto Power Control enabled and saved to flash."
+                                           : "Auto Power Control disabled and saved to flash.");
+    printCameraDetailMenu();
   } else if (line == "0") {
     _screen = Screen::ROUTING;
     printRoutingMenu();

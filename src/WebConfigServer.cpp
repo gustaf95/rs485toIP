@@ -429,7 +429,7 @@ void WebConfigServer::handleRoutingGet() {
   static const char* kAddrModeNames[] = {"rewrite_0x81", "preserve", "rewrite_by_cam"};
 
   String body = "<table><tr><th>CAM</th><th>VISCA Addr</th><th>IP</th><th>Port</th>"
-                "<th>Protocol</th><th>Address Mode</th></tr>";
+                "<th>Protocol</th><th>Address Mode</th><th>Auto Power</th></tr>";
   for (uint8_t n = 1; n <= CAMERA_SLOT_COUNT; n++) {
     CameraSlot* slot = _routing.camera(n);
     body += "<tr><td><a href=\"/routing/cam?n=" + String(n) + "\">CAM" + String(n) + "</a></td>";
@@ -437,7 +437,8 @@ void WebConfigServer::handleRoutingGet() {
     body += "<td>" + (slot->isConfigured() ? slot->ip.toIPAddress().toString() : String("-")) + "</td>";
     body += "<td>" + String(slot->port) + "</td>";
     body += "<td>" + String(kProtocolNames[(int)slot->protocol]) + "</td>";
-    body += "<td>" + String(kAddrModeNames[(int)slot->addressMode]) + "</td></tr>";
+    body += "<td>" + String(kAddrModeNames[(int)slot->addressMode]) + "</td>";
+    body += "<td>" + String(slot->autoPowerControl ? "On" : "Off") + "</td></tr>";
   }
   body += "</table>";
 
@@ -473,6 +474,10 @@ void WebConfigServer::handleRoutingCamGet() {
   body += selectOption(2, (int)slot->addressMode, "rewrite_by_cam");
   body += "</select></label>";
 
+  body += "<label><input type=\"checkbox\" name=\"auto_power_control\"";
+  if (slot->autoPowerControl) body += " checked";
+  body += "> Auto Power Control (Standby when RS485 goes quiet, power on when it chatters)</label>";
+
   body += "<button type=\"submit\">Save</button></form>";
 
   sendPage("CAM" + String(n), body);
@@ -504,6 +509,8 @@ void WebConfigServer::handleRoutingCamPost() {
 
   slot->protocol = (ProtocolMode)_server.arg("protocol").toInt();
   slot->addressMode = (AddressMode)_server.arg("address_mode").toInt();
+  // 체크박스는 체크됐을 때만 폼에 포함된다 - hasArg()로 존재 여부만 본다.
+  slot->autoPowerControl = _server.hasArg("auto_power_control");
 
   _storage.save(_routing.get());
   redirectTo("/routing/cam?n=" + String(n));

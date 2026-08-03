@@ -92,6 +92,29 @@
 // 오래 거짓말하지 않게 한다. 카메라가 명령을 적용할 여유는 줘야 하므로 0은 아니다.
 #define MODE_INQUIRY_SET_VERIFY_DELAY_MS 300
 
+// ---- Auto Power Control ----
+// 카메라 슬롯별 옵션(off가 기본). on이면 RS485 버스에 흐르는 유효 패킷(체크섬까지
+// 통과한, 지정된 카메라 ID와 무관한 모든 패킷)의 양으로 컨트롤러가 활동 중인지
+// 판단해 카메라 전원을 자동으로 켜고 끈다 - "컨트롤러가 재잘거리면 켜고, 침묵하면
+// 끈다" (main.cpp의 updateAutoPowerFromChatter() 참고). 텀블링(tumbling) 윈도우를
+// 쓴다 - 슬라이딩 윈도우만큼 정밀하지 않지만 타임스탬프 배열이 필요 없어 임베디드
+// 환경에 더 단순하고, 최대 오차(윈도우 길이 이내)도 이 용도에는 문제가 안 된다.
+#define AUTO_POWER_CHATTER_WINDOW_MS 10000
+// 윈도우 안에 이 값 이상의 유효 패킷이 있으면 On, 하나도 없으면 Standby. 그 사이
+// (1~2개)는 판단을 보류하고 직전 상태를 유지한다 - 어느 쪽으로도 결론 내리기엔
+// 근거가 애매한 경계 구간이라, 상태를 자주 뒤집는 것보다 유지하는 쪽이 안전하다.
+#define AUTO_POWER_ON_THRESHOLD 3
+// CAM_Power On/Standby 명령을 보낸 뒤 실제로 반영됐는지 CAM_PowerInq로 확인하기까지
+// 기다리는 시간 - 명령을 보내자마자 상태를 낙관적으로 갱신하지 않고, 카메라가 명령을
+// 처리할 시간을 준 뒤 실측으로 확정한다(main.cpp의 reconcileAutoPower() 참고).
+#define AUTO_POWER_VERIFY_DELAY_MS 10000
+// 확인 결과가 기대와 다르거나(카메라가 명령을 거부) 응답 자체가 없으면(카메라 연결
+// 끊김 등) 명령을 다시 보낸다. 재시도 간격은 실패할 때마다 두 배로 늘어나 이 상한에서
+// 멈춘다 - 카메라가 응답하지 않는 동안 계속 짧은 간격으로 명령을 퍼붓지 않으면서도,
+// WiFi 재연결(kWifiRetryIntervalMs)처럼 포기하지 않고 낮은 빈도로 계속 재시도해 카메라가
+// 다시 응답하기 시작하면 자동으로 복구되게 한다.
+#define AUTO_POWER_RETRY_MAX_DELAY_MS (5UL * 60UL * 1000UL)
+
 // ---- Pelco-D framing ----
 // Pelco-D 프레임은 항상 0xFF로 시작하고 길이가 고정 7바이트다
 // (Address, Command1, Command2, Data1, Data2, Checksum).

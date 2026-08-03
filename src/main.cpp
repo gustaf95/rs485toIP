@@ -66,6 +66,49 @@ void resetModeCache() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Auto Power Control
+// ---------------------------------------------------------------------------
+// 카메라별 슬롯 옵션(CameraSlot::autoPowerControl)이 켜졌을 때, RS485 버스가 얼마나
+// "재잘거리는지"만 보고 카메라 전원을 자동으로 켜고/대기시킨다.
+//
+// target(목표)과 confirmed(실측 확인) 상태를 따로 둔다 - updateAutoPowerFromChatter()가
+// target을 정하고, reconcileAutoPower()가 target에 맞는 VISCA 명령을 보낸 뒤 실측으로
+// confirmed를 따라잡을 때까지 재시도한다. 명령을 보낸 순간 낙관적으로 상태를 갱신하지
+// 않는 이유는, 카메라가 명령을 거부하거나(예: 이미 그 상태) 아예 응답하지 않는 경우를
+// "실제로 그렇게 됐다"고 잘못 믿지 않기 위해서다.
+enum class AutoPowerState : uint8_t { UNKNOWN = 0, ON = 1, OFF = 2 };
+AutoPowerState autoPowerConfirmed[CAMERA_SLOT_COUNT] = {};  // CAM_PowerInq 응답으로만 갱신
+AutoPowerState autoPowerTarget[CAMERA_SLOT_COUNT] = {};     // UNKNOWN = 아직 청취 판정 전, 목표 없음
+// false = 다음 reconcile에서 CAM_Power 명령을 보낼 차례, true = 명령을 보내고 나서
+// AUTO_POWER_VERIFY_DELAY_MS 뒤 CAM_PowerInq로 확인할 차례.
+bool autoPowerAwaitingVerify[CAMERA_SLOT_COUNT] = {};
+unsigned long autoPowerActionDueMs[CAMERA_SLOT_COUNT] = {};  // 다음 송신/확인을 시도할 시각
+// 현재 재시도 간격(backoff) - 실패할 때마다 두 배로 늘어 AUTO_POWER_RETRY_MAX_DELAY_MS에서
+// 멈춘다. 목표에 도달하면(confirmed==target) AUTO_POWER_VERIFY_DELAY_MS로 되돌아간다.
+unsigned long autoPowerRetryDelayMs[CAMERA_SLOT_COUNT] = {};
+
+void resetAutoPowerControl() {
+  for (uint8_t i = 0; i < CAMERA_SLOT_COUNT; i++) {
+    autoPowerConfirmed[i] = AutoPowerState::UNKNOWN;
+    autoPowerTarget[i] = AutoPowerState::UNKNOWN;
+    autoPowerAwaitingVerify[i] = false;
+    autoPowerActionDueMs[i] = 0;
+    autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;
+  }
+}
+
+// 텀블링 10초 윈도우 안에서 관측된 유효 패킷 수. handleViscaPacket/handlePelcoDPacket/
+// handlePelcoPPacket이 체크섬까지 통과한 패킷마다(카메라 ID/슬롯 설정 여부와 무관하게)
+// 호출한다. RAW_BRIDGE 입력에서는 이 핸들러들 자체가 호출되지 않으므로(main.cpp
+// loop()의 InputProtocol 분기 참고) 카운트가 항상 0으로 남는다.
+uint16_t autoPowerChatterCount = 0;
+unsigned long autoPowerWindowStartMs = 0;
+
+void recordAutoPowerChatterPacket() {
+  if (autoPowerChatterCount < 0xFFFF) autoPowerChatterCount++;
+}
+
 // 지금 답을 기다리는 중인 조회. VISCA 조회 응답이 전부 `y0 50 pp FF`로 똑같이 생겨서,
 // 어느 질문의 답인지는 "무엇을 물었는지"를 기억하는 것으로만 알 수 있다.
 enum class ModeInquiry : uint8_t { NONE = 0, POWER, AE, WB, FOCUS };
@@ -395,6 +438,7 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
   SystemConfig& cfg = routingTable.get();
   diagnostics.recordRs485Rx(data, len);
   statusLed.notifyRs485Signal();
+  recordAutoPowerChatterPacket();
 
   if (cfg.debugMode) {
     Serial.print("[RX] ");
@@ -946,6 +990,7 @@ void sendPelcoDResponse(const uint8_t* data, uint8_t len) {
 void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485Rx(data, len);
   statusLed.notifyRs485Signal();
+  recordAutoPowerChatterPacket();
 
   SystemConfig& cfg = routingTable.get();
   if (cfg.debugMode) {
@@ -989,6 +1034,7 @@ void sendPelcoPResponse(const uint8_t* data, uint8_t len) {
 void handlePelcoPPacket(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485Rx(data, len);
   statusLed.notifyRs485Signal();
+  recordAutoPowerChatterPacket();
 
   SystemConfig& cfg = routingTable.get();
   if (cfg.debugMode) {
@@ -1063,27 +1109,33 @@ bool sendModeInquiry(uint8_t camNumber, uint8_t item, const SystemConfig& cfg) {
 // 응답이 전부 `y0 50 pp FF`로 똑같이 생겨서 동시에 던지면 구분할 수 없으므로, 답을
 // 받거나 타임아웃될 때까지 다음 조회를 보내지 않는다. 설정된 슬롯들을 (카메라, 항목)
 // 쌍으로 라운드로빈하되, C3 SET 직후에는 그 항목을 먼저 확인한다.
+// pendingInquiry가 MODE_INQUIRY_TIMEOUT_MS 안에 응답을 못 받으면 여기서 놓아준다. Pelco
+// 라운드로빈(pollCameraModeInquiries)이든 Auto Power Control(reconcileAutoPower)이든
+// pendingInquiry 슬롯 하나를 공유해서 조회를 보내므로, 어느 쪽이 보냈든 이 타임아웃 처리는
+// 입력 프로토콜과 무관하게(Pelco 게이팅 없이) 항상 돌아야 한다 - pollCameraModeInquiries
+// 안에만 있으면 VISCA 입력(isPelcoInput()==false)에서 Auto Power Control이 보낸 조회가
+// 응답 없이 pendingInquiry를 영영 붙들어 이후 모든 조회(라운드로빈이든 재시도든)가 막힌다.
+void pollInquiryTimeout() {
+  if (pendingInquiry == ModeInquiry::NONE) return;
+  if (millis() - lastInquiryMs < MODE_INQUIRY_TIMEOUT_MS) return;
+
+  // 응답 없음 - 이 항목은 이번 회차를 포기한다. 카메라가 조회를 지원하지 않아도 여기서
+  // 자연스럽게 흘러가고, 캐시는 마지막으로 알던 값을 유지한다. 원인을 눈으로 볼 수 있도록
+  // 타임아웃을 로그로 남긴다.
+  if (routingTable.get().debugMode) {
+    Serial.print("[MODE] CAM");
+    Serial.print(pendingInquiryCam);
+    Serial.println(" inquiry timed out - no reply");
+  }
+  pendingInquiry = ModeInquiry::NONE;
+}
+
 void pollCameraModeInquiries() {
   SystemConfig& cfg = routingTable.get();
   if (!isPelcoInput(cfg) || WiFi.status() != WL_CONNECTED) return;
+  if (pendingInquiry != ModeInquiry::NONE) return;  // 타임아웃 여부는 pollInquiryTimeout()이 처리
 
   unsigned long now = millis();
-
-  if (pendingInquiry != ModeInquiry::NONE) {
-    if (now - lastInquiryMs < MODE_INQUIRY_TIMEOUT_MS) return;
-    // 응답 없음 - 이 항목은 이번 회차를 포기하고 다음으로 넘어간다. 카메라가 조회를
-    // 지원하지 않아도 여기서 자연스럽게 흘러가고, 캐시는 마지막으로 알던 값을 유지한다.
-    //
-    // 다만 이게 계속 반복되면 캐시가 C3 SET이 설정한 낙관적 값에만 머문다는 뜻이라,
-    // 카메라가 명령을 거부했을 때 컨트롤러 표시와 실제 상태가 어긋난다. 원인을 눈으로
-    // 볼 수 있도록 타임아웃을 로그로 남긴다.
-    if (cfg.debugMode) {
-      Serial.print("[MODE] CAM");
-      Serial.print(pendingInquiryCam);
-      Serial.println(" inquiry timed out - no reply");
-    }
-    pendingInquiry = ModeInquiry::NONE;
-  }
 
   // C3 SET 직후 예약된 확인 조회는 라운드로빈 순서를 건너뛰고 먼저 나간다.
   bool priorityDue = (priorityInquiryCam != 0 && (long)(now - priorityInquiryDueMs) >= 0);
@@ -1117,7 +1169,21 @@ bool consumeModeInquiryReply(uint8_t camNumber, const uint8_t* buf, uint8_t len)
 
   CameraModeCache& c = modeCache[camNumber - 1];
   switch (pendingInquiry) {
-    case ModeInquiry::POWER: c.power = buf[2]; break;
+    case ModeInquiry::POWER: {
+      c.power = buf[2];
+      // Auto Power Control의 reconcileAutoPower()가 던진 확인 조회의 답일 수도 있다 -
+      // 그 경우 실측 상태로 confirmed를 갱신한다. auto power control이 꺼진 카메라에도
+      // 그냥 채워두지만, 그 카메라의 target은 항상 UNKNOWN이라 reconcile은 손대지 않는다.
+      uint8_t i = camNumber - 1;
+      if (buf[2] == 0x02) autoPowerConfirmed[i] = AutoPowerState::ON;
+      else if (buf[2] == 0x03) autoPowerConfirmed[i] = AutoPowerState::OFF;
+      // 목표에 도달했으면 재시도 backoff를 기본값으로 되돌려, 나중에 다시 어긋났을 때
+      // 처음(10초)부터 재시도하게 한다.
+      if (autoPowerConfirmed[i] == autoPowerTarget[i]) {
+        autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;
+      }
+      break;
+    }
     case ModeInquiry::AE: c.aeMode = buf[2]; break;
     case ModeInquiry::WB: c.wbMode = buf[2]; break;
     case ModeInquiry::FOCUS: c.focusMode = buf[2]; break;
@@ -1125,6 +1191,111 @@ bool consumeModeInquiryReply(uint8_t camNumber, const uint8_t* buf, uint8_t len)
   }
   pendingInquiry = ModeInquiry::NONE;
   return true;
+}
+
+// camNumber에 VISCA CAM_Power On/Standby 명령을 보낸다. sendModeInquiry()와 같은 이유로
+// routingTable.route()를 태운다 - 슬롯의 Address Mode가 명령에도 조회와 동일하게 적용돼야
+// 한다.
+bool sendAutoPowerCommand(uint8_t camNumber, bool on, const SystemConfig& cfg) {
+  uint8_t buf[6] = {(uint8_t)(VISCA_ADDR_CAM1 + camNumber - 1), 0x01, 0x04, 0x00,
+                    (uint8_t)(on ? 0x02 : 0x03), VISCA_TERMINATOR};
+
+  RoutedPacket routed[1];
+  if (routingTable.route(buf, sizeof(buf), routed, 1) == 0) return false;
+  if (!sendToCamera(*routed[0].slot, routed[0].output, routed[0].outputLen)) return false;
+
+  if (cfg.debugMode) {
+    Serial.print("[AUTO-POWER] CAM");
+    Serial.print(camNumber);
+    Serial.print(on ? " -> On  " : " -> Standby  ");
+    Serial.println(viscaBytesToHex(routed[0].output, routed[0].outputLen));
+  }
+  return true;
+}
+
+// 텀블링 10초 윈도우가 닫힐 때마다 그 안에 관측된 유효 패킷 수로 auto power control이
+// 켜진 카메라들의 목표(target) 상태를 정한다 (config.h AUTO_POWER_* 참고). 실제 VISCA
+// 명령은 여기서 보내지 않는다 - 목표만 바꿔두고, reconcileAutoPower()가 명령 전송/확인/
+// 재시도를 전담한다. 목표가 실제로 바뀔 때만(edge-triggered) 재시도 backoff를 초기화하고
+// 즉시 시도하게 예약한다 - 조건이 계속 유지되는 동안 매 윈도우마다 같은 명령을 다시
+// 만들어내지 않기 위함이다.
+void updateAutoPowerFromChatter() {
+  SystemConfig& cfg = routingTable.get();
+  if (cfg.inputProtocol == InputProtocol::RAW_BRIDGE) return;
+
+  unsigned long now = millis();
+  if (now - autoPowerWindowStartMs < AUTO_POWER_CHATTER_WINDOW_MS) return;
+
+  uint16_t count = autoPowerChatterCount;
+  autoPowerChatterCount = 0;
+  autoPowerWindowStartMs = now;
+
+  for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
+    CameraSlot* slot = routingTable.camera(camNumber);
+    if (slot == nullptr || !slot->isConfigured() || !slot->autoPowerControl) continue;
+
+    uint8_t i = camNumber - 1;
+    AutoPowerState desired = autoPowerTarget[i];
+    if (count >= AUTO_POWER_ON_THRESHOLD) desired = AutoPowerState::ON;
+    else if (count == 0) desired = AutoPowerState::OFF;
+    // count가 1~2개면 desired를 안 바꾼다 - 켤지 끌지 판단하기엔 근거가 애매한 경계
+    // 구간이라, 위에서 desired를 현재 target으로 초기화해뒀으므로 자연히 유지된다.
+
+    if (desired != autoPowerTarget[i]) {
+      autoPowerTarget[i] = desired;
+      autoPowerAwaitingVerify[i] = false;                      // 새 목표 - 명령부터 다시 보낸다
+      autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;    // backoff 초기화
+      autoPowerActionDueMs[i] = now;                            // 다음 reconcile tick에 바로 시도
+    }
+  }
+}
+
+// target(목표)과 confirmed(실측 확인) 상태가 다른 카메라에 대해 VISCA CAM_Power 명령을
+// 보내고, AUTO_POWER_VERIFY_DELAY_MS 뒤 CAM_PowerInq로 실제 반영됐는지 확인한다. 확인
+// 결과가 기대와 다르거나(카메라가 명령을 거부) 응답 자체가 없으면(카메라 연결 끊김 등)
+// 명령을 다시 보낸다 - 재시도 간격은 실패할 때마다 두 배로 늘어 AUTO_POWER_RETRY_MAX_DELAY_MS
+// (5분)에서 멈춘다. 카메라가 계속 응답하지 않아도 이 상한 안에서 낮은 빈도로 계속
+// 재시도하며(WiFi 재연결과 같은 패턴 - kWifiRetryIntervalMs 참고), 다시 응답하기 시작하면
+// 자동으로 복구된다.
+//
+// sendModeInquiry()와 응답 형식이 같은 pendingInquiry 한 슬롯을 공유하므로, 이미 다른
+// 조회가 진행 중이면 이번 tick은 건너뛴다.
+void reconcileAutoPower() {
+  SystemConfig& cfg = routingTable.get();
+  if (cfg.inputProtocol == InputProtocol::RAW_BRIDGE || WiFi.status() != WL_CONNECTED) return;
+
+  unsigned long now = millis();
+
+  for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
+    CameraSlot* slot = routingTable.camera(camNumber);
+    if (slot == nullptr || !slot->isConfigured() || !slot->autoPowerControl) continue;
+
+    uint8_t i = camNumber - 1;
+    if (autoPowerTarget[i] == AutoPowerState::UNKNOWN) continue;    // 아직 청취 판정 전
+    if (autoPowerConfirmed[i] == autoPowerTarget[i]) continue;      // 이미 목표대로 확인됨
+    if ((long)(now - autoPowerActionDueMs[i]) < 0) continue;        // 아직 때가 안 됨
+
+    if (!autoPowerAwaitingVerify[i]) {
+      // 명령을 보낸다 - 실패해도(네트워크 순간 문제 등) 다음 재시도 tick에 다시 시도된다.
+      sendAutoPowerCommand(camNumber, autoPowerTarget[i] == AutoPowerState::ON, cfg);
+      autoPowerAwaitingVerify[i] = true;
+      autoPowerActionDueMs[i] = now + AUTO_POWER_VERIFY_DELAY_MS;
+    } else {
+      // 반영됐는지 확인할 시간 - 조회를 보낸다. 응답은 비동기로 consumeModeInquiryReply()가
+      // confirmed를 갱신하므로, 여기서는 이번 시도가 실패했다고 미리 가정하고 다음 재시도
+      // (명령 재전송)를 예약해둔다 - 응답이 실제로 목표와 맞게 오면 위 두 번째 continue
+      // 조건(confirmed==target)에서 다음 tick에 곧바로 걸러져 재전송이 취소된다.
+      if (pendingInquiry != ModeInquiry::NONE) continue;  // 다른 조회가 진행 중 - 다음 tick에
+
+      sendModeInquiry(camNumber, /*item=POWER*/ 0, cfg);
+      autoPowerAwaitingVerify[i] = false;  // 다음엔 다시 명령 전송부터 (실패를 기본 가정)
+      autoPowerActionDueMs[i] = now + autoPowerRetryDelayMs[i];
+      unsigned long doubled = autoPowerRetryDelayMs[i] * 2;
+      autoPowerRetryDelayMs[i] = (doubled > AUTO_POWER_RETRY_MAX_DELAY_MS || doubled < autoPowerRetryDelayMs[i])
+                                     ? (unsigned long)AUTO_POWER_RETRY_MAX_DELAY_MS
+                                     : doubled;
+    }
+  }
 }
 
 // 카메라로부터의 응답을 non-blocking으로 확인한다. 모드 조회 답변은 캐시로 흡수하고,
@@ -1302,6 +1473,10 @@ void setup() {
   diagnostics.begin();
   statusLed.begin(cfg.statusLedPin);
   resetModeCache();
+  resetAutoPowerControl();
+  // 부팅 직후 아직 아무 트래픽도 못 봤는데 millis()가 이미 10초를 넘긴 걸로 오판해
+  // 곧장 Standby부터 내려버리는 걸 막는다 - 첫 윈도우도 정상적으로 10초를 채우게 한다.
+  autoPowerWindowStartMs = millis();
 
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
               cfg.rs485Uart0Shared, cfg.rs485Invert);
@@ -1405,5 +1580,8 @@ void loop() {
   }
 
   pollCameraResponses();
+  pollInquiryTimeout();
   pollCameraModeInquiries();
+  updateAutoPowerFromChatter();
+  reconcileAutoPower();
 }

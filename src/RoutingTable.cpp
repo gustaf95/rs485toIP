@@ -39,6 +39,7 @@ void RoutingTable::applyDefaults() {
     slot.port = DEFAULT_CAMERA_PORT;
     slot.protocol = ProtocolMode::IP_VISCA_RAW_UDP;
     slot.addressMode = AddressMode::PRESERVE;
+    slot.autoPowerControl = false;
   }
 }
 
