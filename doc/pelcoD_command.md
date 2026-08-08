@@ -375,8 +375,9 @@ Group/Swing/Aux/Initialize는 양쪽 모두 근거가 없어 구현 대상에서
 - 그 외에는 Standard Command 비트 플래그로 해석해 Pan/Tilt(대각선 조합 포함)/Zoom/Focus를
   각각 독립적으로 판단하고, 동시에 여러 축이 세팅돼 있으면 VISCA 명령을 여러 개 보낸다(예:
   이동+줌이 한 패킷에 같이 온 경우).
-- Pan/Tilt 속도(DATA1/DATA2)는 `scalePelcoSpeedToVisca()`가 0x00~0x3F 가정으로 VV(0x01~0x18)/
-  WW(0x01~0x14)로 환산한다 — 11절의 "우선 처리" 정책을 그대로 코드화한 것.
+- Pan/Tilt 속도(DATA1/DATA2)는 `scalePelcoSpeedToVisca()`가 0x00~0x3F 범위로 VV(0x01~0x18)/
+  WW(0x01~0x14)로 환산한다 — 11절 참고. ZU-EPC7000이 팬/틸트 양쪽 모두 `0x3F`까지 보내는 것이
+  실측으로 확인됐다(2026-08-08).
 - Pelco-D는 ADDR을 그대로 카메라 번호로 쓰고, Pelco-P는 ADDR이 "실제 주소 - 1"이라 +1 보정
   후 사용한다(`pelcoP_command.md` 1/7절). 두 경우 다 카메라 슬롯 1~7 밖이면 무시한다.
 
@@ -415,13 +416,20 @@ Group/Swing/Aux/Initialize는 양쪽 모두 근거가 없어 구현 대상에서
     (**2026-08-02 갱신:** 이 설정 이름을 `PelcoResponseMode`로 일반화하고 Pelco-P에도 동일하게
     적용했다 — `pelcoP_command.md` 참고. ZU-EPC7000 컨트롤러의 "ACK MODE" 설정이 Pelco-D/P를
     구분하지 않는 것과 일관된 설계.)
-- [ ] **Pan/Tilt Speed(DATA1/DATA2)의 실제 값 범위.** ZU-EPC7000이 어느 범위(0x00~0x3F인지,
+- [x] **Pan/Tilt Speed(DATA1/DATA2)의 실제 값 범위.** ~~ZU-EPC7000이 어느 범위(0x00~0x3F인지,
       0xFF 터보 포함인지 등)로 속도를 보내는지 실측하여 VISCA `VV`(0x01~0x18)/`WW`(0x01~0x14)로
-      스케일링하는 공식을 확정.
+      스케일링하는 공식을 확정.~~
   - **우선 처리:** 확인 전까지는 Pelco-D 표준 관례인 0x00~0x3F(6bit, 0~63)를 입력 범위로 가정하고
     `VV = round(입력 * 0x18 / 0x3F)` 같은 선형 비례식으로 VISCA 속도로 환산한다. 0을 포함해 0으로
     나누는 경우나 0x3F를 넘는 값(터보 등)은 각각 최소/최대값으로 clamp. 실측치가 다르면 이 공식만
     교체하면 되도록 별도 함수로 분리해서 구현.
+  - **확인 완료 (2026-08-08):** 조이스틱을 좌/우 끝까지 완전히 민 상태를 Raw Byte Monitor로
+    캡처하니 Pan Right(`CMND2=0x02`)/Pan Left(`0x04`) 양방향 모두 DATA1이 `0x3F`까지 올라갔고,
+    틸트도 이전 실측에서 `0x3F`가 확인됐다. 터보(`0xFF`)는 관측되지 않았다. 즉 위 "우선 처리"
+    가정이 실측과 일치하며, 팬/틸트가 같은 최대치를 쓰므로 축별 분리도 필요 없다 —
+    `scalePelcoSpeedToVisca()`를 그대로 확정한다. 상세 로그는 `todo.md` 1.2절 참고.
+    조이스틱은 끝까지 미는 동안 `01 02 04 0F 2B 3B 3F`처럼 **속도가 바뀔 때마다 새 패킷**을
+    보내며 램프를 그리고, 놓으면 Stop(`FF ADDR 00 00 00 00 CK`)을 2회 보낸다.
 - [x] **Stop 명령 시 Pan/Tilt/Zoom/Focus 중 무엇을 멈춰야 하는지 구분 가능 여부.** ~~Pelco-D Stop은
       Byte3/Byte4가 전부 0인 패킷 하나뿐이라 어떤 축이 멈춰야 하는지 패킷만으로는 알 수 없음~~
   - **확인 완료 (2026-08-02):** FoMaKo 자체 Pelco-D 표(7.1절)에도 `Stop`이 축 구분 없는 단일 명령

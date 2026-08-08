@@ -728,9 +728,11 @@ VISCA `Pan-tiltDrive`는 Stop이 올 때까지 유지되는 **래치 명령**이
 다 소화될 때까지 카메라가 계속 흘러가고 반응도 굼떠진다. 방향이나 속도가 조금이라도
 바뀌면 바이트가 달라져 즉시 통과하므로, Stop을 포함해 새 명령이 지연되는 일은 없다.
 
-Pan/Tilt 속도(DATA1/DATA2)는 실측 전까지 Pelco-D 표준 관례인 0x00~0x3F 범위를 가정해 VISCA
-속도로 선형 환산한다(`scalePelcoSpeedToVisca()`, 결과는 1~viscaMax로 클램프된다). FoMaKo
-매뉴얼 5.2절 기준 VISCA 상한은 팬 `0x18`, 틸트 `0x14`다. 커맨드 세부 사항과 번역 근거는
+Pan/Tilt 속도(DATA1/DATA2)는 Pelco-D 표준 관례인 0x00~0x3F 범위를 VISCA 속도로 선형
+환산한다(`scalePelcoSpeedToVisca()`, 결과는 1~viscaMax로 클램프된다). FoMaKo 매뉴얼 5.2절
+기준 VISCA 상한은 팬 `0x18`, 틸트 `0x14`다. ZU-EPC7000이 조이스틱 최대 변위에서 팬/틸트
+양쪽 모두 `0x3F`를 보내는 것이 실측으로 확인됐으므로(2026-08-08) 이 범위 가정이 그대로
+맞고, 축별로 다른 최대치를 쓸 필요도 없다. 커맨드 세부 사항과 번역 근거는
 [pelcoD_command.md](pelcoD_command.md) / [pelcoP_command.md](pelcoP_command.md) 참고.
 
 "Pelco-D/P Autodetect"는 패킷 단위로 시작 바이트(Pelco-D는 0xFF, Pelco-P는 0xA0)를 보고

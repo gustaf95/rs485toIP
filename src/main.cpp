@@ -550,10 +550,12 @@ void handleViscaPacket(const uint8_t* data, uint8_t len) {
   }
 }
 
-// Pelco-D DATA1/DATA2 속도 값을 VISCA VV/WW로 환산한다. 실측 전까지의 임시 정책 -
-// Pelco-D 표준 관례인 0x00~0x3F(6bit) 입력 범위를 가정하고 선형 비례식으로 환산한다
-// (doc/pelcoD_command.md 11절 "Pan/Tilt Speed 실제 값 범위" 항목 참고). 실측치가
-// 다르면 이 함수만 교체하면 된다.
+// Pelco-D DATA1/DATA2 속도 값을 VISCA VV/WW로 환산한다. Pelco-D 표준 관례인
+// 0x00~0x3F(6bit) 입력 범위를 선형 비례식으로 환산한다 (doc/pelcoD_command.md 11절
+// "Pan/Tilt Speed 실제 값 범위" 항목 참고). ZU-EPC7000이 조이스틱 최대 변위에서 팬/틸트
+// 양쪽 모두 0x3F를 보내는 것이 실측으로 확인됐다(2026-08-08) - 축별로 다른 만점을 쓸
+// 필요가 없어 kPelcoSpeedMax 하나를 공유한다. 다른 컨트롤러에서 범위가 다르면 이 함수만
+// 교체하면 된다.
 uint8_t scalePelcoSpeedToVisca(uint8_t pelcoSpeed, uint8_t viscaMax) {
   const uint8_t kPelcoSpeedMax = 0x3F;
   uint16_t scaled = ((uint16_t)pelcoSpeed * viscaMax + kPelcoSpeedMax / 2) / kPelcoSpeedMax;
