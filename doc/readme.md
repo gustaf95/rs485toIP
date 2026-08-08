@@ -665,9 +665,23 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
 >
 > SET의 `pp`/`qq`가 VISCA 명령 코드/값과 그대로 같다는 것이 실측으로 확인됐다:
 > Power On/Standby = `00 02`/`00 03`, Iris Auto/Manual = `39 00`/`39 03`,
-> Focus Auto/Manual = `38 02`/`38 03`, One Push AF = `18 01` — 전부 FoMaKo 매뉴얼의
-> VISCA 표와 일치한다. SET에는 응답이 없고, 컨트롤러는 주기적인 GET 폴링으로 화면을
-> 갱신한다.
+> Focus Auto/Manual = `38 02`/`38 03`, One Push AF = `18 01`. SET에는 응답이 없고,
+> 컨트롤러는 주기적인 GET 폴링으로 화면을 갱신한다.
+>
+> **예외 하나 — One Push AF**: `pp`가 VISCA 코드와 같다는 게 FoMaKo가 그 코드를
+> 받아준다는 뜻은 아니다. `C3 18 01`을 `04 18 01`(One Push Trigger)로 그대로 넘겼더니
+> 카메라가 `E0 60 02 FF`를 돌려줬다 — 에러 코드 `0x02`는 Syntax Error, 즉 **명령 자체를
+> 모른다**는 뜻이다(실측 2026-08-08). 그래서 게이트웨이는 이것만 `04 38 04`(Focus AF
+> 모드 = One Push)로 바꿔 보낸다. 이쪽은 `E0 41 FF`/`E0 51 FF`(ACK/Completion)를 받고
+> 실제로 초점을 잡는다. 컨트롤러 LCD 표시는 그대로 Manual인데, 아래 "알려진 한계"의
+> 접어서 보고하는 규칙이 `0x04`도 Manual로 처리하기 때문이다.
+>
+> 그리고 **2초 뒤(`VISCA_ONE_PUSH_AF_SETTLE_MS`) `04 38 03`으로 Manual에 되돌려 놓는다**
+> (`pollOnePushAfRestore()`). One Push 모드로 두면 카메라가 이후 Focus Near/Far를 거부해서
+> 수동 초점 조절이 막힌다. 컨트롤러의 ONE PUSH AF 키는 Manual 상태에서 누르는 일회성
+> 트리거이므로 되돌리는 게 조작 모델과도 맞고, 덕분에 연속으로 눌러도 매번 Manual →
+> One Push의 실제 모드 전환이 되어 동작한다. 이 2초 안에 컨트롤러가 Focus Auto/Manual을
+> 직접 지정하면 되돌리기 예약은 취소된다.
 >
 > **알려진 한계 — Focus One Push**: `D3 19` 응답의 Focus 필드가 1비트(Manual/Auto)뿐이라
 > 카메라 OSD의 세 번째 모드(One Push)를 표현할 수 없다. 게이트웨이는 One Push(VISCA

@@ -125,6 +125,11 @@ uint8_t priorityInquiryCam = 0;  // 0이면 예약 없음
 uint8_t priorityInquiryItem = 0;
 unsigned long priorityInquiryDueMs = 0;
 
+// One Push AF를 트리거한 뒤 Focus 모드를 Manual로 되돌릴 예약
+// (pollOnePushAfRestore() 참고). 0이면 예약 없음.
+uint8_t onePushRestoreCam = 0;
+unsigned long onePushRestoreDueMs = 0;
+
 // 직전에 카메라로 내보낸 번역 결과 - 같은 명령이 연달아 쏟아지는 걸 억제하는 데 쓴다
 // (isDuplicateViscaCommand() 참고).
 uint8_t lastSentCam = 0;
@@ -816,7 +821,7 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
                 data1 == 0x39 ||   // CAM_AEMode       (00 Full Auto / 03 Manual)
                 data1 == 0x38 ||   // CAM_FocusAFMode  (02 Auto / 03 Manual / 04 One Push)
                 data1 == 0x35 ||   // CAM_WBMode
-                data1 == 0x18);    // CAM_Focus One Push Trigger (일회성)
+                data1 == PELCO_EDIS_SET_FOCUS_TRIGGER);  // One Push AF (아래에서 재매핑)
   if (!known) {
     if (cfg.debugMode) {
       Serial.print("[");
@@ -831,6 +836,35 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
       diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
     }
     return;
+  }
+
+  // One Push AF만은 pp를 그대로 흘리지 않고 `04 38 04`(Focus AF 모드 = One Push)로
+  // 바꿔 보낸다. 나머지 파라미터가 전부 1:1인 것과 다른 유일한 예외다.
+  //
+  // 실측 근거 (2026-08-08, doc/todo.md 1.1절): `04 18 01`(표준 Sony VISCA의 CAM_Focus
+  // One Push Trigger)을 그대로 넘기면 FoMaKo가 초점을 잡지 않고 `E0 60 02 FF`를
+  // 돌려준다. 에러 코드 0x02는 Syntax Error - "지금은 실행할 수 없다"(0x41)가 아니라
+  // 명령 자체를 모른다는 뜻이므로, FoMaKo는 `04 18`을 구현하지 않았다. 반면 `04 38 04`는
+  // `E0 41 FF`/`E0 51 FF`(ACK/Completion)를 받고 실제로 초점을 잡는다.
+  //
+  // 다만 모드를 One Push로 바꾼 채로 두면 안 된다 - 카메라가 AF 모드에 머물러 이후
+  // 수동 초점 조작(Focus Near/Far)을 거부한다(실측 2026-08-08). 컨트롤러 입장에서
+  // One Push AF는 Manual 상태에서 누르는 일회성 트리거일 뿐이므로, 초점을 잡을 여유를
+  // 준 뒤 Manual로 되돌려야 조작 모델이 맞는다 - pollOnePushAfRestore()가 담당한다.
+  if (data1 == PELCO_EDIS_SET_FOCUS_TRIGGER && data2 == 0x01) {
+    uint8_t buf[6] = {0, 0x01, 0x04, VISCA_CAM_FOCUS_AF_MODE, VISCA_FOCUS_MODE_ONE_PUSH,
+                      VISCA_TERMINATOR};
+    forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+    updateModeCacheFromSet(camNumber, VISCA_CAM_FOCUS_AF_MODE, VISCA_FOCUS_MODE_ONE_PUSH);
+    onePushRestoreCam = camNumber;
+    onePushRestoreDueMs = millis() + VISCA_ONE_PUSH_AF_SETTLE_MS;
+    return;
+  }
+
+  // 컨트롤러가 Focus 모드를 직접 지정하면(Auto/Manual 키) 위에서 걸어둔 되돌리기 예약을
+  // 취소한다 - 안 그러면 잠시 뒤 예약이 깨어나 조작자가 방금 고른 모드를 덮어쓴다.
+  if (data1 == VISCA_CAM_FOCUS_AF_MODE && onePushRestoreCam == camNumber) {
+    onePushRestoreCam = 0;
   }
 
   uint8_t buf[6] = {0, 0x01, 0x04, data1, data2, VISCA_TERMINATOR};
@@ -1149,6 +1183,28 @@ void pollInquiryTimeout() {
     Serial.println(" inquiry timed out - no reply");
   }
   pendingInquiry = ModeInquiry::NONE;
+}
+
+// One Push AF 트리거(`04 38 04`)로 올려둔 Focus 모드를 Manual(`04 38 03`)로 되돌린다.
+//
+// 트리거 직후에 바로 되돌리면 초점을 잡는 도중에 끊기므로 VISCA_ONE_PUSH_AF_SETTLE_MS를
+// 기다렸다가 보낸다. 되돌리지 않고 One Push 모드로 두면 카메라가 이후 Focus Near/Far를
+// 거부해서, 컨트롤러 LCD에는 Manual이라고 떠 있는데 실제로는 초점이 안 움직이는
+// 상태가 된다(실측 2026-08-08, doc/todo.md 1.1절).
+//
+// Manual로 고정해 되돌리는 게 맞다 - 컨트롤러의 ONE PUSH AF 키는 Manual Focus 상태에서만
+// 누르는 트리거 버튼이라(1.1절), 트리거 전 모드가 Manual이 아닌 경우가 애초에 없다.
+void pollOnePushAfRestore() {
+  if (onePushRestoreCam == 0) return;
+  if ((long)(millis() - onePushRestoreDueMs) < 0) return;
+
+  uint8_t cam = onePushRestoreCam;
+  onePushRestoreCam = 0;
+
+  uint8_t buf[6] = {0, 0x01, 0x04, VISCA_CAM_FOCUS_AF_MODE, VISCA_FOCUS_MODE_MANUAL,
+                    VISCA_TERMINATOR};
+  forwardTranslatedVisca(cam, buf, sizeof(buf), "ONE-PUSH AF");
+  updateModeCacheFromSet(cam, VISCA_CAM_FOCUS_AF_MODE, VISCA_FOCUS_MODE_MANUAL);
 }
 
 void pollCameraModeInquiries() {
@@ -1602,6 +1658,7 @@ void loop() {
 
   pollCameraResponses();
   pollInquiryTimeout();
+  pollOnePushAfRestore();
   pollCameraModeInquiries();
   updateAutoPowerFromChatter();
   reconcileAutoPower();

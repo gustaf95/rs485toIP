@@ -62,8 +62,10 @@
 //
 // SET의 pp/qq가 VISCA 명령 코드/값과 그대로 같다는 게 실측으로 확인됐다 (Iris
 // Auto/Manual = `39 00`/`39 03`, Focus Auto/Manual = `38 02`/`38 03`, One Push AF =
-// `18 01` - 전부 FoMaKo 매뉴얼의 VISCA 표와 일치). SET에는 응답이 없고, 컨트롤러는
-// 주기적인 GET 폴링으로 화면을 갱신한다.
+// `18 01`). SET에는 응답이 없고, 컨트롤러는 주기적인 GET 폴링으로 화면을 갱신한다.
+// 다만 pp가 곧 VISCA 코드라는 게 "FoMaKo가 그 VISCA 코드를 지원한다"는 뜻은 아니다 -
+// One Push AF(`18 01`)가 실제로 그랬고, 유일하게 1:1이 아닌 예외가 됐다. 아래
+// PELCO_EDIS_SET_FOCUS_TRIGGER 참고.
 #define PELCO_EDIS_SET_CMD 0xC3
 #define PELCO_EDIS_QUERY_CMD 0xD3
 #define PELCO_EDIS_QUERY_RESPONSE 0xD7
@@ -79,6 +81,20 @@
 #define PELCO_EDIS_STATUS_RESP1_BASE 0x50
 #define PELCO_EDIS_STATUS_IRIS_MANUAL 0x40   // DATA2 bit6
 #define PELCO_EDIS_STATUS_FOCUS_MANUAL 0x01  // DATA2 bit0
+
+// One Push AF 키의 SET 파라미터(`C3 18 01`)와, 그걸 카메라로 내보낼 때 실제로 쓰는
+// VISCA 코드. 컨트롤러가 보내는 pp(0x18)를 그대로 흘리면 FoMaKo가 Syntax Error
+// (`E0 60 02 FF`)로 거절한다 - `04 18`을 구현하지 않았다. `04 38 04`로 바꿔 보내야
+// 동작한다 (실측 2026-08-08, doc/todo.md 1.1절, handleEdisVendorCommand() 참고).
+#define PELCO_EDIS_SET_FOCUS_TRIGGER 0x18   // = VISCA CAM_Focus One Push Trigger (미지원)
+#define VISCA_CAM_FOCUS_AF_MODE 0x38        // 02 Auto / 03 Manual / 04 One Push
+#define VISCA_FOCUS_MODE_ONE_PUSH 0x04
+#define VISCA_FOCUS_MODE_MANUAL 0x03
+// One Push AF를 트리거한 뒤 Focus 모드를 Manual로 되돌리기까지 기다리는 시간.
+// 되돌리지 않으면 카메라가 One Push AF 모드에 머물러 수동 초점 조작을 거부한다
+// (실측 2026-08-08). 반대로 너무 일찍 되돌리면 초점을 잡는 도중에 끊어버리므로,
+// AF 한 번이 끝날 여유를 주는 값이어야 한다.
+#define VISCA_ONE_PUSH_AF_SETTLE_MS 2000
 
 // 카메라의 AE/WB/Focus 모드를 VISCA로 조회해 캐시를 갱신하는 주기와, 한 조회의
 // 응답을 기다리는 시간. VISCA 조회 응답은 셋 다 `y0 50 pp FF`로 똑같이 생겨서 어느
