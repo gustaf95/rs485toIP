@@ -72,10 +72,18 @@
 // GET 항목 중 유일하게 해독된 것 - Iris/AWB/Focus의 Auto/Manual 상태를 한 번에 묶어
 // 돌려준다. 컨트롤러 LED 화면에 표시되는 세 항목이 정확히 이것이다.
 #define PELCO_EDIS_QUERY_MODE_STATUS 0x19
-// 전원 상태 조회. 응답은 `FF ADDR 00 D7 00 <code> CK` 형태로, code가 VISCA
-// CAM_PowerInq 값 그대로다 (0x02 On, 0x03 Standby). 모드 상태 조회와 달리 RESP1에
-// 데이터가 실리지 않고 CMND1(0x00)이 그대로 에코된다.
-#define PELCO_EDIS_QUERY_POWER 0x04
+// 단일 항목 조회. DATA2가 "무엇을 묻는지"를 VISCA 명령 코드로 지정하는 선택자다.
+// 응답은 항목과 무관하게 `FF ADDR 00 D7 00 <code> CK` 형태로 같고, code도 VISCA 값
+// 그대로다. 모드 상태 조회(D3 19)와 달리 RESP1에 데이터가 실리지 않고 CMND1(0x00)이
+// 그대로 에코되며, 응답만 봐서는 어느 항목의 답인지 알 수 없다(컨트롤러가 질문 순서로
+// 짝을 맞춘다).
+//
+// 처음엔 DATA2가 항상 0x00이라 이 자체를 "전원 조회"로 봤는데, BACK LIGHT 키를 누르면
+// `D3 04 33`이 나가고 응답값이 BLC 상태를 따라가는 게 실측으로 확인됐다(2026-08-08).
+// 즉 0x04는 항목 선택 조회고 0x00은 그중 CAM_Power였다.
+#define PELCO_EDIS_QUERY_ITEM 0x04
+#define VISCA_CAM_POWER 0x00       // 0x02 On / 0x03 Standby
+#define VISCA_CAM_BACKLIGHT 0x33   // 0x02 On / 0x03 Off
 // 응답 RESP1의 상위 니블. 실측한 4대 모두 0x5로 고정이고 컨트롤러가 표시하지 않는
 // 항목이라, 정체를 모르는 채로 관측값을 그대로 채운다.
 #define PELCO_EDIS_STATUS_RESP1_BASE 0x50

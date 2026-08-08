@@ -54,6 +54,7 @@ struct CameraModeCache {
   uint8_t aeMode;     // VISCA CAM_AEMode:       0x00 Full Auto, 0x03 Manual, 0x0A/0x0B 우선순위 모드
   uint8_t wbMode;     // VISCA CAM_WBMode:       0x00 Auto, 0x05 Manual, ...
   uint8_t focusMode;  // VISCA CAM_FocusAFMode:  0x02 Auto, 0x03 Manual, 0x04 One Push
+  uint8_t backlight;  // VISCA CAM_Back Light:   0x02 On, 0x03 Off
 };
 // 초기값 = 전부 Auto (VISCA 코드로 AE Full Auto / WB Auto / Focus Auto).
 CameraModeCache modeCache[CAMERA_SLOT_COUNT] = {};
@@ -63,6 +64,8 @@ void resetModeCache() {
     modeCache[i].aeMode = 0x00;     // Full Auto
     modeCache[i].wbMode = 0x00;     // Auto
     modeCache[i].focusMode = 0x02;  // Auto Focus
+    // BLC만 Auto 계열 기본값이 없다. ED-P 매뉴얼의 공장 초기값이 OFF라 그쪽을 따른다.
+    modeCache[i].backlight = 0x03;  // Back Light Off
   }
 }
 
@@ -111,8 +114,8 @@ void recordAutoPowerChatterPacket() {
 
 // 지금 답을 기다리는 중인 조회. VISCA 조회 응답이 전부 `y0 50 pp FF`로 똑같이 생겨서,
 // 어느 질문의 답인지는 "무엇을 물었는지"를 기억하는 것으로만 알 수 있다.
-enum class ModeInquiry : uint8_t { NONE = 0, POWER, AE, WB, FOCUS };
-#define MODE_INQUIRY_ITEM_COUNT 4
+enum class ModeInquiry : uint8_t { NONE = 0, POWER, AE, WB, FOCUS, BACKLIGHT };
+#define MODE_INQUIRY_ITEM_COUNT 5
 ModeInquiry pendingInquiry = ModeInquiry::NONE;
 uint8_t pendingInquiryCam = 0;
 unsigned long lastInquiryMs = 0;
@@ -676,6 +679,7 @@ void updateModeCacheFromSet(uint8_t camNumber, uint8_t viscaCode, uint8_t value)
     case 0x39: c.aeMode = value; item = 1; break;
     case 0x35: c.wbMode = value; item = 2; break;
     case 0x38: c.focusMode = value; item = 3; break;
+    case VISCA_CAM_BACKLIGHT: c.backlight = value; item = 4; break;
     default: return;  // One Push AF(0x18)처럼 모드를 바꾸지 않는 일회성 트리거
   }
 
@@ -699,20 +703,23 @@ void logEdisResponse(const char* what, const uint8_t* resp, uint8_t len) {
   Serial.println(viscaBytesToHex(resp, len));
 }
 
-// D3 04(전원 상태 조회)에 대한 D7 응답. 모드 상태 조회와 응답 배치가 다르다 -
-// RESP1에 데이터가 실리지 않고 CMND1(0x00)이 그대로 에코되며, DATA2가 VISCA
-// CAM_Power 코드(0x02 On / 0x03 Standby)를 그대로 담는다.
-void sendEdisPowerStatus(uint8_t camNumber) {
+// D3 04 <item>(단일 항목 조회)에 대한 D7 응답. 어떤 항목이든 배치가 같다 - 모드 상태
+// 조회(D3 19)와 달리 RESP1에 데이터가 실리지 않고 CMND1(0x00)이 그대로 에코되며,
+// DATA2가 VISCA 값 코드(0x02/0x03)를 그대로 담는다.
+//
+// 응답만 봐서는 어느 항목의 답인지 구분되지 않는다 - 실측한 CAM_Power(`D3 04 00`)와
+// CAM_Back Light(`D3 04 33`) 응답이 바이트 배치까지 완전히 같았다. 컨트롤러가 질문 순서로
+// 짝을 맞추는 구조라, 우리도 받은 순서대로 그 자리에서 답하면 된다.
+void sendEdisItemStatus(uint8_t camNumber, uint8_t value, const char* what) {
   uint8_t resp[PELCO_D_PACKET_LEN] = {PELCO_D_START_BYTE, camNumber, 0x00,
-                                      PELCO_EDIS_QUERY_RESPONSE, 0x00,
-                                      modeCache[camNumber - 1].power, 0};
+                                      PELCO_EDIS_QUERY_RESPONSE, 0x00, value, 0};
   uint8_t sum = 0;
   for (uint8_t i = 1; i < PELCO_D_PACKET_LEN - 1; i++) sum += resp[i];
   resp[PELCO_D_PACKET_LEN - 1] = sum;
 
   rs485.writePacket(resp, sizeof(resp));
   diagnostics.recordRs485TxResponse();
-  logEdisResponse("Power status", resp, sizeof(resp));
+  logEdisResponse(what, resp, sizeof(resp));
 }
 
 // D3 19 상태 조회에 대한 D7 응답을 캐시에서 조립해 RS485로 돌려준다.
@@ -788,12 +795,36 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
       }
       return;
     }
-    if (data1 == PELCO_EDIS_QUERY_POWER) {
-      sendEdisPowerStatus(camNumber);
+    // 단일 항목 조회. **DATA2가 어느 항목인지를 정한다** - DATA1만 보고 답하면 안 된다.
+    // 예전엔 DATA2가 항상 0x00이라 이 조회 자체를 "전원 조회"로 봤는데, BACK LIGHT 키가
+    // `D3 04 33`을 보내는 게 확인되면서(2026-08-08) DATA2가 항목 선택자임이 드러났다.
+    // DATA1만 보고 분기하면 BLC를 물었는데 전원 상태로 답하게 된다.
+    if (data1 == PELCO_EDIS_QUERY_ITEM) {
+      const CameraModeCache& c = modeCache[camNumber - 1];
+      if (data2 == VISCA_CAM_POWER) {
+        sendEdisItemStatus(camNumber, c.power, "Power status");
+      } else if (data2 == VISCA_CAM_BACKLIGHT) {
+        sendEdisItemStatus(camNumber, c.backlight, "Back light status");
+      } else {
+        // 모르는 항목에 값을 지어내면 컨트롤러가 거짓을 표시한다. 침묵하고 기록만 한다.
+        if (cfg.debugMode) {
+          Serial.print("[");
+          Serial.print(debugTag);
+          Serial.print("] Unknown query item 0x04/0x");
+          Serial.print(data2, HEX);
+          Serial.println(" - no answer");
+        }
+        char reason[40];
+        snprintf(reason, sizeof(reason), "Unknown query item 0x04/0x%02X", data2);
+        diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
+        return;
+      }
       if (cfg.debugMode) {
         Serial.print("[");
         Serial.print(debugTag);
-        Serial.println("] Power status query -> answered from cache");
+        Serial.print("] Item query 0x");
+        Serial.print(data2, HEX);
+        Serial.println(" -> answered from cache");
       }
       return;
     }
@@ -821,6 +852,7 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
                 data1 == 0x39 ||   // CAM_AEMode       (00 Full Auto / 03 Manual)
                 data1 == 0x38 ||   // CAM_FocusAFMode  (02 Auto / 03 Manual / 04 One Push)
                 data1 == 0x35 ||   // CAM_WBMode
+                data1 == VISCA_CAM_BACKLIGHT ||  // CAM_Back Light (02 On / 03 Off)
                 data1 == PELCO_EDIS_SET_FOCUS_TRIGGER);  // One Push AF (아래에서 재매핑)
   if (!known) {
     if (cfg.debugMode) {
@@ -1171,8 +1203,9 @@ bool sendModeInquiry(uint8_t camNumber, uint8_t item, const SystemConfig& cfg) {
   CameraSlot* slot = routingTable.camera(camNumber);
   if (slot == nullptr || !slot->isConfigured()) return false;
 
-  // ModeInquiry의 열거 순서(POWER, AE, WB, FOCUS)와 같은 순서여야 한다.
-  static const uint8_t kInquiryCodes[MODE_INQUIRY_ITEM_COUNT] = {0x00, 0x39, 0x35, 0x38};
+  // ModeInquiry의 열거 순서(POWER, AE, WB, FOCUS, BACKLIGHT)와 같은 순서여야 한다.
+  static const uint8_t kInquiryCodes[MODE_INQUIRY_ITEM_COUNT] = {VISCA_CAM_POWER, 0x39, 0x35,
+                                                                 0x38, VISCA_CAM_BACKLIGHT};
   uint8_t buf[5] = {(uint8_t)(VISCA_ADDR_CAM1 + camNumber - 1), 0x09, 0x04,
                     kInquiryCodes[item], VISCA_TERMINATOR};
 
@@ -1300,6 +1333,7 @@ bool consumeModeInquiryReply(uint8_t camNumber, const uint8_t* buf, uint8_t len)
     case ModeInquiry::AE: c.aeMode = buf[2]; break;
     case ModeInquiry::WB: c.wbMode = buf[2]; break;
     case ModeInquiry::FOCUS: c.focusMode = buf[2]; break;
+    case ModeInquiry::BACKLIGHT: c.backlight = buf[2]; break;
     default: break;
   }
   pendingInquiry = ModeInquiry::NONE;

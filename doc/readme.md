@@ -659,12 +659,15 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
 >          R1 = 0x50 | (VISCA WB 모드 코드 & 0x0F)
 >          D2 = (Iris가 Auto가 아니면 0x40) | (Focus가 Auto가 아니면 0x01)
 >
-> GET:   FF ADDR 00 D3 04 00 CK        →  전원 상태 조회
-> 응답:  FF ADDR 00 D7 00 <code> CK      code = VISCA CAM_Power (0x02 On / 0x03 Standby)
+> GET:   FF ADDR 00 D3 04 pp CK        →  단일 항목 조회, pp가 VISCA 명령 코드
+> 응답:  FF ADDR 00 D7 00 <code> CK      pp=00 CAM_Power / pp=33 CAM_Back Light
 > ```
 >
-> 전원 조회는 모드 조회와 응답 배치가 다르다 — RESP1에 데이터가 실리지 않고 CMND1(0x00)이
-> 그대로 에코된다.
+> 단일 항목 조회는 모드 조회와 응답 배치가 다르다 — RESP1에 데이터가 실리지 않고
+> CMND1(0x00)이 그대로 에코되며, 값 코드는 VISCA 그대로(`0x02`/`0x03`)다. **응답만 봐서는
+> 어느 항목의 답인지 구분되지 않으므로**(전원과 Back Light 응답이 바이트까지 동일)
+> 컨트롤러가 질문 순서로 짝을 맞춘다. 게이트웨이도 `DATA2`를 보고 그 자리에서 답한다 —
+> `DATA1`만 보고 분기하면 BLC를 물었는데 전원 상태로 답하게 된다.
 >
 > **카메라가 켜져 있지 않으면 어떤 조회에도 답하지 않는다.** 실물 ED-P가 스탠바이 중
 > 침묵하는 것과 같은 동작이다. 전원 상태는 VISCA `CAM_PowerInq`(`09 04 00`)를 주기적으로
@@ -675,8 +678,10 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
 >
 > SET의 `pp`/`qq`가 VISCA 명령 코드/값과 그대로 같다는 것이 실측으로 확인됐다:
 > Power On/Standby = `00 02`/`00 03`, Iris Auto/Manual = `39 00`/`39 03`,
-> Focus Auto/Manual = `38 02`/`38 03`, One Push AF = `18 01`. SET에는 응답이 없고,
-> 컨트롤러는 주기적인 GET 폴링으로 화면을 갱신한다.
+> Focus Auto/Manual = `38 02`/`38 03`, Back Light On/Off = `33 02`/`33 03`,
+> One Push AF = `18 01`. SET에는 응답이 없고, 컨트롤러는 주기적인 GET 폴링으로 화면을
+> 갱신한다. BACK LIGHT 키는 패널상 토글이지만 컨트롤러가 On/Off를 명시적으로 번갈아
+> 보내므로, 게이트웨이가 토글 상태를 기억할 필요는 없다.
 >
 > **예외 하나 — One Push AF**: `pp`가 VISCA 코드와 같다는 게 FoMaKo가 그 코드를
 > 받아준다는 뜻은 아니다. `C3 18 01`을 `04 18 01`(One Push Trigger)로 그대로 넘겼더니
