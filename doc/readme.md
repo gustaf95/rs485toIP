@@ -628,14 +628,24 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
 유효한 패킷은 `translatePelcoAndForward()`가 VISCA 명령으로 변환해서 카메라로 전달한다
 (`RS485 RX Total` 카운터 반영, Debug Mode에서 `[PELCO-D RX]`/`[PELCO-P RX]` → `[PELCO-D->VISCA]`/
 `[PELCO-P->VISCA]` → `[TX]` 순서로 로그가 찍힌다). 지원 범위는 FoMaKo 카메라 자체가 Pelco-D/P로
-지원하는 명령에 맞춰져 있다:
+지원하는 명령에 맞춰져 있다.
+
+> 아래는 요약이고, **입력 바이트 ↔ 출력 VISCA 전체 대응표와 각 항목의 근거(실측/매뉴얼/추론)는
+> [pelcoD_command.md 12절](pelcoD_command.md#12-실측-확인된-명령어-셋-운용-확정)**에 있다.
 
 - **번역됨**: Pan/Tilt 이동(대각선 포함), Stop(Pan/Tilt+Zoom+Focus 동시 정지), Zoom Tele/Wide,
-  Focus Near/Far, Preset Set/Goto/Clear.
+  Focus Near/Far, **Iris Open/Close**(→ VISCA `CAM_Iris Up/Down` `04 0B 02`/`04 0B 03`),
+  Preset Set/Goto/Clear.
+  - Iris는 ZU-EPC7000의 28행 커맨드 표에도 FoMaKo 자체 Pelco-D 표에도 없어서 처음엔
+    빠져 있었는데, 컨트롤러가 실제로는 `FF 06 02 00 00 00 08`을 보내는 게 확인돼
+    추가했다(2026-08-08). **AE 모드가 Manual일 때만 효과가 있다** — Auto면 자동 노출이
+    조리개를 도로 가져간다. 게이트웨이가 모드를 대신 바꾸지는 않는다.
 - **아직 번역 안 됨**: Query Pan/Tilt/Zoom Position(VISCA 쪽 비동기 응답을 Pelco Extended
   Response로 재포장하는 로직이 필요해 후속 작업으로 남겨둠), 그리고 FoMaKo 자체가 Pelco-D/P로
   지원하지 않는 Run Group/Swing·Aux·절대좌표 Set·Focus Position Query는 애초에 구현 대상이
-  아님 — 이런 패킷은 조용히 무시된다(Address가 카메라 슬롯 1~7 밖이어도 마찬가지).
+  아님 — 이런 패킷은 카메라로 나가지 않는다(Address가 카메라 슬롯 1~7 밖이어도 마찬가지).
+  다만 **번역할 비트가 하나도 없는 Standard Command는 Unhandled Commands 로그에 남긴다** —
+  Iris 건이 오래 묻혀 있던 이유가 이런 패킷을 아무 기록 없이 버렸기 때문이다.
 - **EDIS 벤더 확장 (`0xC3` SET / `0xD3` GET)**: ZU-EPC7000 ↔ EDIS ED-P 사이에서 실측한
   벤더 고유 명령으로, 표준 Pelco-D 확장 옵코드 표 밖의 값이다. 바로 아래 상자 참고.
 
@@ -671,9 +681,11 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
 > **예외 하나 — One Push AF**: `pp`가 VISCA 코드와 같다는 게 FoMaKo가 그 코드를
 > 받아준다는 뜻은 아니다. `C3 18 01`을 `04 18 01`(One Push Trigger)로 그대로 넘겼더니
 > 카메라가 `E0 60 02 FF`를 돌려줬다 — 에러 코드 `0x02`는 Syntax Error, 즉 **명령 자체를
-> 모른다**는 뜻이다(실측 2026-08-08). 그래서 게이트웨이는 이것만 `04 38 04`(Focus AF
-> 모드 = One Push)로 바꿔 보낸다. 이쪽은 `E0 41 FF`/`E0 51 FF`(ACK/Completion)를 받고
-> 실제로 초점을 잡는다. 컨트롤러 LCD 표시는 그대로 Manual인데, 아래 "알려진 한계"의
+> 모른다**는 뜻이다(실측 2026-08-08). FoMaKo 매뉴얼의 `CAM_Focus` 표에도 `04 08`/`04 48`/
+> `04 38`만 있고 `04 18` 행이 없다 — 반면 `CAM_WB`에는 One Push Trigger(`04 10 05`)가
+> 명시돼 있어, Focus에만 트리거를 안 넣은 게 확인된다. 그래서 게이트웨이는 이것만
+> `04 38 04`(Focus AF 모드 = One Push)로 바꿔 보낸다. 이쪽은 `E0 41 FF`/`E0 51 FF`
+> (ACK/Completion)를 받고 실제로 초점을 잡는다. 컨트롤러 LCD 표시는 그대로 Manual인데, 아래 "알려진 한계"의
 > 접어서 보고하는 규칙이 `0x04`도 Manual로 처리하기 때문이다.
 >
 > 그리고 **2초 뒤(`VISCA_ONE_PUSH_AF_SETTLE_MS`) `04 38 03`으로 Manual에 되돌려 놓는다**
@@ -687,6 +699,8 @@ Command2, Data1, Data2, Checksum, 합산 체크섬)을 조립하고 체크섬을
 > 카메라 OSD의 세 번째 모드(One Push)를 표현할 수 없다. 게이트웨이는 One Push(VISCA
 > `0x04`)를 Manual로 접어서 보고한다.
 >
+> 이 확장의 전체 대응표(SET 파라미터 / GET 조회 항목 / 각 항목의 근거)는
+> [pelcoD_command.md 12.3절](pelcoD_command.md#123-edis-벤더-확장-0xc3-set--0xd3-get)에 있고,
 > 아직 해독하지 못한 조회 항목(`D3 16`)과 미검증 항목은 [todo.md](todo.md)에 정리했다.
 >
 > 응답 규격은 ED-P 4대(설정이 서로 다른)의 실측값 6건을 모두 재현한다:

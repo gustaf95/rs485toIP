@@ -960,13 +960,20 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
 
   bool up = cmnd2 & 0x08, down = cmnd2 & 0x10, left = cmnd2 & 0x04, right = cmnd2 & 0x02;
   bool zoomTele = cmnd2 & 0x20, zoomWide = cmnd2 & 0x40;
-  bool focusNear, focusFar;
+  // CMND1은 두 프로토콜의 비트 배치가 한 자리씩 밀려 있다 - Pelco-D는 bit7을 Sense로
+  // 쓰지만 Pelco-P는 그 자리가 없고 Focus Far가 CMND2에서 CMND1으로 옮겨왔다
+  // (doc/pelcoP_command.md 4절). Focus뿐 아니라 Iris 자리도 같이 밀리므로 함께 분기한다.
+  bool focusNear, focusFar, irisOpen, irisClose;
   if (isPelcoP) {
     focusFar = cmnd1 & 0x01;
     focusNear = cmnd1 & 0x02;
+    irisOpen = cmnd1 & 0x04;
+    irisClose = cmnd1 & 0x08;
   } else {
     focusNear = cmnd1 & 0x01;
     focusFar = cmnd2 & 0x80;
+    irisOpen = cmnd1 & 0x02;
+    irisClose = cmnd1 & 0x04;
   }
 
   // 아래 세 블록 중 하나라도 실제로 명령을 내보냈는지 - 비트가 하나도 안 켜진
@@ -1017,6 +1024,35 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
     uint8_t buf[6] = {0, 0x01, 0x04, 0x08, (uint8_t)(focusFar ? 0x02 : 0x03), VISCA_TERMINATOR};
     forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
     acted = true;
+  }
+
+  // Iris Open/Close -> FoMaKo 매뉴얼 VISCA 표의 CAM_Iris Up/Down(`04 0B 02`/`04 0B 03`).
+  // Up이 조리개를 여는(밝아지는) 쪽이다. 한 번에 한 칸씩 움직이는 계단식 명령이라,
+  // 컨트롤러가 버튼을 누르고 있는 동안 반복해 보내는 패킷이 그대로 한 칸씩 쌓인다.
+  //
+  // ZU-EPC7000의 28행 커맨드 표(doc/pelcoD_command.md 5절)에도, FoMaKo 자체 Pelco-D
+  // 표(7.1절)에도 Iris 행이 없어서 처음엔 구현 대상에서 빠져 있었다. 그런데 컨트롤러가
+  // 실제로는 `FF 06 02 00 00 00 08`(Pelco-D CMND1 bit1)을 보내는 게 실측으로 확인돼
+  // (2026-08-08) 추가했다 - 표준 Pelco-D 비트 배치 자체에는 원래 있던 자리다.
+  //
+  // AE 모드가 Manual이 아니면 카메라가 조리개를 도로 가져가므로 효과가 없다. 컨트롤러에
+  // Iris Auto/Manual 키가 따로 있어(`C3 39 00`/`C3 39 03`) 조작자가 직접 고르는 값이므로,
+  // 여기서 모드를 대신 바꾸지는 않는다.
+  if (irisOpen || irisClose) {
+    uint8_t buf[6] = {0, 0x01, 0x04, 0x0B, (uint8_t)(irisOpen ? 0x02 : 0x03), VISCA_TERMINATOR};
+    forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+    acted = true;
+  }
+
+  // 여기까지 와서 아무것도 못 보냈다면, 비트는 켜져 있는데(Stop은 위에서 이미 걸러졌다)
+  // 우리가 번역할 줄 모르는 자리다 - Camera On/Off, Auto/Manual Scan 같은 것들. 조용히
+  // 버리면 Iris 때처럼 "명령은 나가는데 카메라가 안 움직인다"는 증상만 남고 원인을
+  // 짚을 단서가 없으므로, Unhandled Commands 로그에 남긴다.
+  if (!acted) {
+    char reason[48];
+    snprintf(reason, sizeof(reason), "No translatable bit (CMND1=0x%02X CMND2=0x%02X)", cmnd1,
+             cmnd2);
+    diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
   }
 
   return acted;

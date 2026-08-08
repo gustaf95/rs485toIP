@@ -8,6 +8,10 @@ EDIS ED-P 시리즈 카메라 매뉴얼, ZU-EPC7000 컨트롤러 자체 매뉴�
 Pelco-P 프로토콜은 구조가 상당히 달라(시작 바이트, 체크섬 방식 등) 별도 문서 [`pelcoP_command.md`](pelcoP_command.md)로
 분리했다. 자세한 이유는 7절 참고.
 
+> **지금 실제로 동작하는 번역 목록만 보려면 [12절](#12-실측-확인된-명령어-셋-운용-확정)로.**
+> 1~11절은 스펙 대조와 설계 근거를 쌓아온 기록이고, 12절이 그 결론 — 실물 ZU-EPC7000 +
+> FoMaKo + EDIS ED-P로 확인한 명령어 셋 한 장이다.
+
 ---
 
 ## 1. 프로토콜 개요
@@ -160,6 +164,19 @@ FUJIFILM이나 ZU-EPC7000처럼 "참고용 다른 벤더"가 아니라 **이 프
 | 22 | Query Tilt Position | ✅ | 0x53 |
 | 23 | Query Zoom Position | ✅ | 0x55 |
 | 24 | Query Focus Position | ❌ | FoMaKo 표에 없음 |
+| — | **Iris Open / Close** | ✅ | **어느 표에도 없지만 컨트롤러가 실제로 보낸다** (아래 참고) |
+
+> **표에 없는 Iris Open/Close (실측 2026-08-08).** ZU-EPC7000의 28행 표에도, FoMaKo 자체
+> Pelco-D 표에도 Iris 행이 없어서 처음엔 번역 대상에서 빠져 있었다. 그런데 컨트롤러의
+> IRIS 키를 누르면 `FF 06 02 00 00 00 08`(CMND1 bit1 = Iris Open)이 실제로 나간다 —
+> 4절의 표준 Pelco-D 비트 배치에는 원래 있던 자리다. FoMaKo VISCA 표에도
+> `CAM_Iris Up/Down`(`04 0B 02`/`04 0B 03`)이 있어서, 그쪽으로 번역하면 동작한다.
+> Pelco-P는 CMND1 비트가 한 자리씩 밀려 Iris Open이 bit2, Close가 bit3이다
+> (`pelcoP_command.md` 4절) — `translatePelcoAndForward()`가 Focus와 함께 분기한다.
+>
+> **교훈**: "컨트롤러 표에 없다"가 "컨트롤러가 안 보낸다"는 뜻이 아니다. 이 건이
+> 조용히 묻혔던 이유가 번역 못 한 Standard Command를 아무 기록 없이 버렸기 때문이라,
+> 이제 그런 패킷은 Unhandled Commands 로그에 남긴다.
 | 25 | Response Pan Position | ✅ | 0x59 |
 | 26 | Response Tilt Position | ✅ | 0x5B |
 | 27 | Response Zoom Position | ✅ | 0x5D |
@@ -372,9 +389,10 @@ Group/Swing/Aux/Initialize는 양쪽 모두 근거가 없어 구현 대상에서
   절대 겹치지 않는다(4절).
 - CMND1==0x00 && CMND2==0x00이면 Stop — VISCA Pan/Tilt Stop + Zoom Stop + Focus Stop 3개를
   전부 보낸다.
-- 그 외에는 Standard Command 비트 플래그로 해석해 Pan/Tilt(대각선 조합 포함)/Zoom/Focus를
+- 그 외에는 Standard Command 비트 플래그로 해석해 Pan/Tilt(대각선 조합 포함)/Zoom/Focus/Iris를
   각각 독립적으로 판단하고, 동시에 여러 축이 세팅돼 있으면 VISCA 명령을 여러 개 보낸다(예:
-  이동+줌이 한 패킷에 같이 온 경우).
+  이동+줌이 한 패킷에 같이 온 경우). 어느 블록에서도 명령을 못 만들었으면(우리가 모르는
+  비트만 켜진 패킷) Unhandled Commands 로그에 남긴다.
 - Pan/Tilt 속도(DATA1/DATA2)는 `scalePelcoSpeedToVisca()`가 0x00~0x3F 범위로 VV(0x01~0x18)/
   WW(0x01~0x14)로 환산한다 — 11절 참고. ZU-EPC7000이 팬/틸트 양쪽 모두 `0x3F`까지 보내는 것이
   실측으로 확인됐다(2026-08-08).
@@ -437,3 +455,117 @@ Group/Swing/Aux/Initialize는 양쪽 모두 근거가 없어 구현 대상에서
     즉 FoMaKo 자신도 Pelco-D 레벨에서는 Stop을 전체 정지로 취급한다는 뜻이므로, 게이트웨이가 Pelco-D
     Stop 수신 시 VISCA Pan/Tilt Stop + Zoom Stop + Focus Stop을 한꺼번에 보내는 기존 계획이
     FoMaKo의 실제 동작 방식과 의미상 일치한다. 계획대로 확정.
+
+---
+
+## 12. 실측 확인된 명령어 셋 (운용 확정)
+
+**기준 구성**: ZU-EPC7000 컨트롤러 + FoMaKo(6번, IP) + EDIS ED-P(1~4번, 같은 RS485 버스).
+1~11절이 스펙 대조와 설계 근거라면, 이 절은 그 결론 — 실물에서 확인한 것만 모았다.
+
+근거 표기:
+
+| 표기 | 뜻 |
+| --- | --- |
+| 🔬 | **실측** — 실제 바이트를 캡처했거나 카메라 응답/동작으로 확인 |
+| 📖 | **매뉴얼** — FoMaKo VISCA 표(`fomako_manual.pdf`)에 명시된 명령 |
+| ❓ | **미검증** — 문서상 비트 배치를 따랐을 뿐 실물로 확인한 적 없음 |
+
+### 12.1 Standard Command (비트 플래그)
+
+`FF ADDR CMND1 CMND2 DATA1 DATA2 CK`. 여러 비트가 동시에 켜져 있으면 VISCA 명령을 각각 보낸다.
+
+| 기능 | 비트 | 나가는 VISCA | 근거 |
+| --- | --- | --- | --- |
+| Pan Left | CMND2 bit2 (`0x04`) | `8x 01 06 01 VV WW 01 03 FF` | 🔬📖 |
+| Pan Right | CMND2 bit1 (`0x02`) | `8x 01 06 01 VV WW 02 03 FF` | 🔬📖 |
+| Tilt Up | CMND2 bit3 (`0x08`) | `8x 01 06 01 VV WW 03 01 FF` | 🔬📖 |
+| Tilt Down | CMND2 bit4 (`0x10`) | `8x 01 06 01 VV WW 03 02 FF` | 🔬📖 |
+| 대각선 4종 | 위 비트 OR 조합 | `p3`/`p4`를 각각 `01`/`02`로 | 📖 (7.1절 FoMaKo 표에 별도 행 존재) |
+| Zoom Tele | CMND2 bit5 (`0x20`) | `8x 01 04 07 02 FF` | 📖 |
+| Zoom Wide | CMND2 bit6 (`0x40`) | `8x 01 04 07 03 FF` | 📖 |
+| Focus Near | CMND1 bit0 (`0x01`) | `8x 01 04 08 03 FF` | 🔬 `FF 06 01 00 00 00 07` 캡처 |
+| Focus Far | CMND2 bit7 (`0x80`) | `8x 01 04 08 02 FF` | 📖 |
+| **Iris Open** | CMND1 bit1 (`0x02`) | `8x 01 04 0B 02 FF` | 🔬 `FF 06 02 00 00 00 08` 캡처 + 동작 확인 (2026-08-08) |
+| **Iris Close** | CMND1 bit2 (`0x04`) | `8x 01 04 0B 03 FF` | 🔬 동작 확인 (2026-08-08) |
+| Stop | CMND1=CMND2=`0x00` | `06 01 01 01 03 03` + `04 07 00` + `04 08 00` 3개 | 🔬 `FF 06 00 00 00 00 06` 캡처 |
+
+- **Pan/Tilt 속도**: DATA1/DATA2 `0x00~0x3F` → VISCA `VV`(`0x01~0x18`) / `WW`(`0x01~0x14`)
+  선형 환산(`scalePelcoSpeedToVisca()`). 🔬 컨트롤러가 팬/틸트 양쪽 모두 `0x3F`까지 보내는 것을
+  확인했고(11절), 📖 VISCA 상한도 매뉴얼 `Pan_tiltDrive` 항목과 일치한다. 터보(`0xFF`)는 미관측.
+- **Iris는 AE 모드가 Manual일 때만 효과가 있다.** Auto면 자동 노출이 조리개를 도로 가져간다.
+  게이트웨이는 모드를 대신 바꾸지 않는다 — 컨트롤러에 Iris Auto/Manual 키가 따로 있다.
+- Iris는 ZU-EPC7000 28행 표에도 FoMaKo Pelco-D 표에도 **없는 명령**인데 컨트롤러가 실제로 보낸다.
+  7.1절 아래 상자 참고.
+- 번역할 비트가 하나도 없는 Standard Command는 **Unhandled Commands 로그**에 남는다
+  (Camera On/Off, Auto/Manual Scan 등). Iris 건이 오래 묻혀 있던 이유가 이런 패킷을 아무 기록 없이
+  버렸기 때문이다.
+
+### 12.2 Extended Command
+
+CMND1=`0x00` + CMND2가 고정 옵코드(전부 홀수라 Standard 비트 플래그와 절대 겹치지 않는다).
+
+| 기능 | CMND2 | 나가는 VISCA | 근거 |
+| --- | --- | --- | --- |
+| Set Preset | `0x03` | `8x 01 04 3F 01 [ID] FF` | 📖 |
+| Clear Preset | `0x05` | `8x 01 04 3F 00 [ID] FF` | 📖 |
+| Goto Preset | `0x07` | `8x 01 04 3F 02 [ID] FF` | 📖 |
+| Query Pan/Tilt/Zoom Position | `0x51`/`0x53`/`0x55` | **미구현** — 무시하고 Unhandled 로그에만 기록 | `todo.md` 3.1절 |
+
+Preset ID는 재계산 없이 그대로 복사한다(10절). 그 외 홀수 옵코드는 해석하지 않고 무시 + 로그 —
+`0xD3`처럼 벤더 고유 값을 모션 비트로 오독하면 카메라가 멋대로 움직이기 때문이다(9.3절).
+
+### 12.3 EDIS 벤더 확장 (`0xC3` SET / `0xD3` GET)
+
+표준 Pelco-D 확장 옵코드 표(`0x03~0x6F`) **밖의 값**이라 어떤 표준 문서에도 없다. 전부 ZU-EPC7000
+↔ EDIS ED-P 트래픽을 캡처해 복원했다. `SET`의 `pp`/`qq`가 VISCA 명령 코드/값과 그대로 같다.
+
+| 컨트롤러 조작 | Pelco-D | 나가는 VISCA | 근거 |
+| --- | --- | --- | --- |
+| Power On / Standby | `C3 00 02` / `C3 00 03` | `8x 01 04 00 02/03 FF` | 🔬📖 |
+| Iris Auto / Manual | `C3 39 00` / `C3 39 03` | `8x 01 04 39 00/03 FF` | 🔬📖 |
+| Focus Auto / Manual | `C3 38 02` / `C3 38 03` | `8x 01 04 38 02/03 FF` | 🔬📖 |
+| WB Mode | `C3 35 pq` | `8x 01 04 35 pq FF` | 🔬(응답에서 코드 확인) 📖 |
+| **One Push AF** | `C3 18 01` | `8x 01 04 38 04 FF`, **2초 뒤** `8x 01 04 38 03 FF` | 🔬 아래 참고 |
+
+> **One Push AF만 1:1이 아니다.** `pp`를 그대로 흘린 `04 18 01`(표준 Sony `CAM_Focus One Push
+> Trigger`)에 FoMaKo가 `E0 60 02 FF`로 답한다 — 에러 코드 `0x02`는 Syntax Error, 즉 **명령 자체를
+> 모른다**는 뜻이다(`0x41` Command Not Executable이 아니다). 📖 매뉴얼 `CAM_Focus` 표에도 `04 08`/
+> `04 48`/`04 38`만 있고 `04 18` 행이 없다. 반면 `CAM_WB`에는 One Push Trigger(`04 10 05`)가 명시돼
+> 있어, **Focus에만 트리거를 안 넣은 것**이 확인된다.
+>
+> 그래서 `04 38 04`(Focus AF 모드 = One Push)로 바꿔 보낸다 — 이쪽은 `E0 41 FF`/`E0 51 FF`
+> (ACK/Completion)를 받고 실제로 초점을 잡는다. 그리고 `VISCA_ONE_PUSH_AF_SETTLE_MS`(2초) 뒤
+> `04 38 03`으로 **Manual에 되돌린다**(`pollOnePushAfRestore()`). 되돌리지 않으면 카메라가 AF 모드에
+> 머물러 이후 Focus Near/Far를 거부하는데, 컨트롤러 LCD에는 Manual로 떠 있어 표시와 동작이 어긋난다.
+> 되돌리는 덕분에 연속으로 눌러도 매번 Manual → One Push의 실제 모드 전환이 되어 동작한다.
+> 이 2초 안에 컨트롤러가 Focus Auto/Manual을 직접 지정하면 되돌리기 예약은 취소된다.
+
+**GET(조회)** — 게이트웨이가 캐시(`modeCache`)에서 즉답한다. IP가 설정된 슬롯에만 답하고(같은 버스의
+실물 ED-P와 충돌 방지), 카메라가 켜져 있지 않으면 어떤 조회에도 침묵한다(실물 ED-P와 같은 동작).
+
+| 조회 | 요청 | 응답 | 근거 |
+| --- | --- | --- | --- |
+| Iris/AWB/Focus 모드 | `D3 19 E6` | `FF ADDR R1 D7 19 D2 CK` | 🔬 ED-P 4대 실측값 6건 전부 재현 |
+| 전원 상태 | `D3 04 00` | `FF ADDR 00 D7 00 [code] CK` | 🔬 (`code` = VISCA `CAM_Power`) |
+| **미상** | `D3 16 FA` | **응답 안 함** | 해독 실패, `todo.md` 2.1절 |
+
+```
+R1 = 0x50 | (VISCA WB 모드 코드 & 0x0F)        Auto=0x00, Manual=0x05
+D2 = (Iris가 Auto가 아니면 0x40) | (Focus가 Auto가 아니면 0x01)
+CK = (ADDR + R1 + 0xD7 + 0x19 + D2) & 0xFF
+```
+
+전원 조회는 응답 배치가 다르다 — RESP1에 데이터가 실리지 않고 CMND1(`0x00`)이 그대로 에코된다.
+`D3 19`의 Focus 자리는 1비트뿐이라 One Push(`0x04`)를 Manual로 접어서 보고한다(`todo.md` 1.3절).
+
+### 12.4 아직 확인 못 한 것
+
+| 항목 | 상태 |
+| --- | --- |
+| Pelco-P의 Iris/Focus 비트 배치 | ❓ `pelcoP_command.md` 4절 표만 보고 구현. 현재 운용이 Pelco-D라 검증 기회 없음 |
+| Pelco-P의 EDIS 벤더 확장 | ❓ `!isPelcoP` 가드로 아예 적용하지 않음 (`todo.md` 3.2절) |
+| `D3 16` 조회 항목 | ❓ 응답을 한 번도 못 잡음 (`todo.md` 2.1절) |
+| `D3 19` 응답 RESP1 상위 니블 | ❓ ED-P 4대 모두 `0x5` 고정, 대응하는 표시 항목 없음 (`todo.md` 2.3절) |
+| `FF ADDR 00 00 19 E6 CK` | ❓ CMND1/CMND2가 둘 다 0이라 Stop으로 처리되는데 DATA에 조회 페이로드가 실려 있다. 체크섬은 유효. 모션 비트가 전부 0이라 Stop 해석이 안전하긴 하나 의도는 불명 |
+| 컨트롤러 MENU 버튼 / Preset 95 | ❓ 11절 체크리스트 참고 |

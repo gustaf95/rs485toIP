@@ -84,8 +84,9 @@
 
 // One Push AF 키의 SET 파라미터(`C3 18 01`)와, 그걸 카메라로 내보낼 때 실제로 쓰는
 // VISCA 코드. 컨트롤러가 보내는 pp(0x18)를 그대로 흘리면 FoMaKo가 Syntax Error
-// (`E0 60 02 FF`)로 거절한다 - `04 18`을 구현하지 않았다. `04 38 04`로 바꿔 보내야
-// 동작한다 (실측 2026-08-08, doc/todo.md 1.1절, handleEdisVendorCommand() 참고).
+// (`E0 60 02 FF`)로 거절한다 - 매뉴얼 CAM_Focus 표에도 `04 18` 행이 없어서, `04 18`을
+// 아예 구현하지 않은 게 실측과 문서 양쪽으로 확인됐다. `04 38 04`로 바꿔 보내야
+// 동작한다 (2026-08-08, doc/todo.md 1.1절, handleEdisVendorCommand() 참고).
 #define PELCO_EDIS_SET_FOCUS_TRIGGER 0x18   // = VISCA CAM_Focus One Push Trigger (미지원)
 #define VISCA_CAM_FOCUS_AF_MODE 0x38        // 02 Auto / 03 Manual / 04 One Push
 #define VISCA_FOCUS_MODE_ONE_PUSH 0x04
