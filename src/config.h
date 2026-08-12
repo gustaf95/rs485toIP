@@ -50,22 +50,38 @@
 // 조이스틱을 물고 있는 동안 같은 프레임을 초당 수십 번 재전송하는데, VISCA
 // Pan-tiltDrive는 Stop이 올 때까지 유지되는 래치 명령이라 그대로 흘리면 카메라 명령
 // 큐만 밀린다. 방향/속도가 바뀌면 바이트가 달라져 즉시 통과하므로 반응성은 그대로다.
+//
+// **상대 조정(R/B Gain, ExpComp의 Up/Down)에는 적용하지 않는다.** 그쪽은 같은 바이트의
+// 반복이 곧 "한 칸 더"라서, 억제하면 200ms에 한 칸씩만 통과해 키를 눌러도 화면이 안
+// 움직이는 것처럼 보인다. forwardTranslatedVisca()의 isRelativeStep 인자 참고.
 #define VISCA_DUPLICATE_SUPPRESS_MS 200
 
 // ---- EDIS ED-P 벤더 확장 (Pelco-D) ----
 // ZU-EPC7000 <-> EDIS ED-P 사이에서 실측한 벤더 고유 확장 명령이다. 표준 Pelco-D
 // 확장 옵코드 표(0x03~0x6F) 밖의 값이라 표준 문서에는 없다. 둘 다 CMND1=0x00을 쓴다.
 //
-//   SET:   FF ADDR 00 C3 pp qq CK   -> VISCA `8x 01 04 pp qq FF` 와 1:1 대응
+//   SET:   FF ADDR 00 C3 pp qq CK   -> VISCA `8x 01 04 pp qq FF` 와 대체로 1:1
 //   GET:   FF ADDR 00 D3 pp ?? CK   -> pp가 조회할 항목
-//   응답:  FF ADDR R1 D7 pp val CK
+//   조회 응답: FF ADDR R1 D7 pp val CK
+//   거절 응답: FF ADDR 00 66 00 01 CK   실행할 수 없는 SET에만
 //
-// SET의 pp/qq가 VISCA 명령 코드/값과 그대로 같다는 게 실측으로 확인됐다 (Iris
-// Auto/Manual = `39 00`/`39 03`, Focus Auto/Manual = `38 02`/`38 03`, One Push AF =
-// `18 01`). SET에는 응답이 없고, 컨트롤러는 주기적인 GET 폴링으로 화면을 갱신한다.
-// 다만 pp가 곧 VISCA 코드라는 게 "FoMaKo가 그 VISCA 코드를 지원한다"는 뜻은 아니다 -
-// One Push AF(`18 01`)가 실제로 그랬고, 유일하게 1:1이 아닌 예외가 됐다. 아래
-// PELCO_EDIS_SET_FOCUS_TRIGGER 참고.
+// SET의 pp/qq가 VISCA 명령 코드/값과 대체로 같다는 게 실측으로 확인됐다 (Power
+// On/Standby = `00 02`/`00 03`, Iris Auto/Manual = `39 00`/`39 03`, Focus Auto/Manual =
+// `38 02`/`38 03`, Back Light On/Off = `33 02`/`33 03`). **성공한** SET에는 응답이 없고,
+// 컨트롤러는 주기적인 GET 폴링으로 화면을 갱신한다. 실행할 수 없는 SET에는 거절 응답
+// `FF ADDR 00 66 00 01 CK`가 온다 - VISCA의 `y0 60 41 FF`에 해당하는 자리다
+// (2026-08-12 실측, doc/todo.md 2.4절). 게이트웨이는 아직 이 거절을 합성하지 않는다.
+//
+// 다만 "대체로"다 - pp가 VISCA 코드와 어긋나는 예외가 지금까지 둘 확인됐고, 원인이
+// 서로 다르다:
+//
+//   1. One Push AF (`18 01`) - pp는 진짜 VISCA 코드가 맞는데 FoMaKo가 그 코드를
+//      구현하지 않았다. 카메라 쪽 사정이다. PELCO_EDIS_SET_FOCUS_TRIGGER 참고.
+//   2. AWB (`36 00`/`36 05`) - pp 자체가 VISCA 코드가 아니다. VISCA CAM_WB는 0x35인데
+//      컨트롤러는 0x36을 보낸다. 컨트롤러 쪽 사정이다. PELCO_EDIS_SET_WB_MODE 참고.
+//
+// 그래서 새 파라미터를 추가할 때 pp를 VISCA 코드로 가정하면 안 된다 - 실제로 나가는
+// 바이트를 봐야 한다.
 #define PELCO_EDIS_SET_CMD 0xC3
 #define PELCO_EDIS_QUERY_CMD 0xD3
 #define PELCO_EDIS_QUERY_RESPONSE 0xD7
@@ -97,6 +113,76 @@
 // 동작한다 (2026-08-08, doc/todo.md 1.1절, handleEdisVendorCommand() 참고).
 #define PELCO_EDIS_SET_FOCUS_TRIGGER 0x18   // = VISCA CAM_Focus One Push Trigger (미지원)
 #define VISCA_CAM_FOCUS_AF_MODE 0x38        // 02 Auto / 03 Manual / 04 One Push
+
+// AWB 키의 SET 파라미터와, 그걸 카메라로 내보낼 때 쓰는 VISCA 코드.
+//
+// **pp가 VISCA 코드와 다른 유일한 사례다** (2026-08-12 실측). 컨트롤러가 실제로 보내는
+// 바이트는 0x36인데 VISCA CAM_WB는 0x35다:
+//
+//   FF 03 00 C3 36 00 FC      AWB Auto
+//   FF 03 00 C3 36 05 01      AWB Manual
+//
+// qq(값)는 VISCA 그대로다 - 0x00 Auto, 0x05 Manual이 VISCA CAM_WB 값 표와 정확히 같다.
+// 어긋나는 건 명령 코드 한 바이트뿐이라, 0x36 -> 0x35로 바꿔서 내보낸다.
+//
+// 이전엔 이 파라미터를 0x35로 알고 있었는데, 그건 실측이 아니라 "pp = VISCA 코드"
+// 규칙에서 역산한 추정이었다. 실측으로 확인됐던 건 D3 19 **응답**에 실리는 WB 코드가
+// VISCA 값이라는 것뿐이고, 요청 쪽 pp는 확인된 적이 없었다. 그래서 실제 컨트롤러의
+// AWB 키가 먹지 않았다.
+#define PELCO_EDIS_SET_WB_MODE 0x36         // 컨트롤러가 보내는 pp
+#define VISCA_CAM_WB_MODE 0x35              // 실제 VISCA 코드 (00 Auto / 05 Manual)
+
+// ---- 상대 조정(Up/Down) 파라미터 ----
+// R/B Gain과 BRIGHT 키. AWB와 달리 pp/qq가 표준 VISCA와 정확히 1:1이라 재매핑이 없다
+// (실측 2026-08-12):
+//
+//   FF 03 00 C3 03 02 CB / C3 03 03 CC      R Gain Up / Down    (CAM_RGain)
+//   FF 03 00 C3 04 02 CC / C3 04 03 CD      B Gain Up / Down    (CAM_BGain)
+//   FF 06 00 C3 0E 02 D9 / C3 0E 03 DA      BRIGHT Up / Down    (CAM_ExpComp)
+//
+// BRIGHT 키가 CAM_Bright(0x0D)가 아니라 CAM_ExpComp(0x0E)라는 데 주의. 키 라벨만 보고
+// 0x0D로 짐작하기 쉬운데 실제로 나가는 바이트는 0x0E였다. 둘은 동작 조건도 다르다 -
+// CAM_Bright는 AE 모드가 Bright(`04 39 0D`)일 때만 먹는데, 이 컨트롤러의 IRIS
+// AUTO/MANUAL 키는 AE를 Full Auto(0x00)나 Manual(0x03)로만 보내므로 애초에 Bright
+// 모드가 될 일이 없다. ExpComp는 자동 노출에 보정값을 얹는 방식이라 Full Auto에서
+// 동작하고, 그래서 이 조합에서는 이쪽이 맞는 선택이다.
+//
+// **지금까지의 파라미터와 성격이 다르다 - 상대 조정이다.** 나머지는 전부 "이 값으로
+// 설정하라"는 절대 모드라 modeCache에 담고 조회에 답할 수 있었지만, 이건 "한 칸
+// 올려라/내려라"라서 담을 상태가 없다. 그래서 updateModeCacheFromSet()의 default로
+// 흘러가 캐시를 건드리지 않고, 확인 조회도 예약하지 않는다 - 의도된 동작이다.
+// 절대값을 알려면 VISCA CAM_RGainInq(`09 04 43`)나 CAM_ExpCompPosInq(`09 04 4E`)를
+// 따로 던져야 하는데, 컨트롤러가 이 값들을 표시하지도 조회하지도 않으므로 추적할
+// 이유가 없다.
+//
+// 값의 방향이 다른 파라미터와 반대로 보일 수 있으니 주의 - 여기서 0x02는 On/Auto가
+// 아니라 Up, 0x03은 Off/Manual이 아니라 Down이다. 세 명령 모두 VISCA 값 표
+// (00 Reset / 02 Up / 03 Down)를 그대로 따른다. Reset(0x00)은 컨트롤러에서 관측되지
+// 않아 통과 목록에 넣지 않았다.
+//
+// 전제 조건이 각각 있지만 게이트웨이는 강제하지 않고 그대로 흘려보낸다 - R/B Gain은
+// WB가 Manual일 때, ExpComp Up/Down은 ExpComp가 On(`04 3E 02`)일 때 의미가 있다.
+// 컨트롤러가 그 순서를 지키는지는 컨트롤러 쪽 문제이고, 실측되지 않은 준비 명령을
+// 게이트웨이가 지어내 끼워 넣으면 조작자가 시키지 않은 설정 변경이 된다.
+//
+// **BRIGHT의 동작 조건이 ED-P와 Sony VISCA에서 반대다 - 아직 미해결이다.**
+// 실물 ED-P는 IRIS Manual일 때 밝기가 바뀌고 Auto일 때 거절한다(거절 응답 `0x66`,
+// doc/todo.md 2.4절). 그런데 Sony VISCA CAM_ExpComp는 반대로 AE가 Full Auto/우선 모드일
+// 때 동작하고 Manual에서는 무효다. 그러니 `04 0E`를 그대로 흘리면 조작자 입장에서
+// ED-P에서 되던 조건에서는 안 되고 안 되던 조건에서 되는 상태가 될 수 있다.
+//
+// 그럼에도 지금은 `04 0E`를 그대로 내보낸다 - 실측된 pp를 근거 없이 바꾸지 않는다는
+// 원칙 때문이지, ED-P 쪽 해석(CAM_Iris `04 0B`로 재매핑)이 틀렸다고 판단해서가 아니다.
+// FoMaKo에서 IRIS Manual로 두고 BRIGHT를 눌러보면 갈린다 (doc/todo.md 2.5절).
+#define VISCA_CAM_RGAIN 0x03                // 00 Reset / 02 Up / 03 Down
+#define VISCA_CAM_BGAIN 0x04                // 00 Reset / 02 Up / 03 Down
+#define VISCA_CAM_SHUTTER 0x0A              // 00 Reset / 02 Up / 03 Down
+#define VISCA_CAM_EXP_COMP 0x0E             // 00 Reset / 02 Up / 03 Down (On/Off는 0x3E)
+// Sony VISCA의 노출 관련 상대 조정은 0x0A~0x0E가 연속된 한 벌이다 - Shutter(0A),
+// Iris(0B), Gain(0C), Bright(0D), ExpComp(0E). 지금까지 실측된 건 0A와 0E뿐이라 그 둘만
+// 통과시킨다. 컨트롤러에 IRIS/GAIN 키가 따로 있다면 0B/0C도 나올 텐데, 실제 바이트를
+// 잡기 전에는 넣지 않는다 - AWB(0x36 != VISCA 0x35)에서 "pp = VISCA 코드"를 가정했다가
+// 키가 통째로 먹지 않았던 전례가 있다.
 #define VISCA_FOCUS_MODE_ONE_PUSH 0x04
 #define VISCA_FOCUS_MODE_MANUAL 0x03
 // One Push AF를 트리거한 뒤 Focus 모드를 Manual로 되돌리기까지 기다리는 시간.

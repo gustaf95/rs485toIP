@@ -601,12 +601,23 @@ void rememberSentViscaCommand(uint8_t camNumber, const uint8_t* buf, uint8_t vis
   lastSentMs = millis();
 }
 
+// isRelativeStep = "같은 바이트의 반복이 곧 의미인" 명령(R/B Gain, ExpComp의 Up/Down)일 때
+// true. 중복 억제를 건너뛴다.
+//
+// 중복 억제는 래치 명령(Pan-tiltDrive)을 위해 만든 장치다 - 조이스틱을 물고 있는 동안
+// 컨트롤러가 같은 프레임을 초당 수십 번 재전송하는데, 래치 명령은 한 번 보내면 Stop이
+// 올 때까지 유지되므로 재전송이 전부 군더더기다. 그 전제가 상대 조정에는 성립하지 않는다:
+// `04 0E 02`를 두 번 보내는 건 "같은 말을 두 번"이 아니라 "두 칸 올려라"다. 억제하면
+// 200ms에 한 칸씩만 통과해, 키를 눌러도 화면이 안 움직이는 것처럼 보인다.
+//
+// 흥미롭게도 이 문제는 게이트웨이 슬롯에만 생긴다 - 같은 버스의 실물 ED-P는 컨트롤러
+// 패킷을 직접 받으므로 억제를 거치지 않는다. "3번은 되는데 6번은 안 된다"의 원인이 될 수 있다.
 void forwardTranslatedVisca(uint8_t camNumber, uint8_t* viscaBuf, uint8_t viscaLen,
-                             const char* debugTag) {
+                             const char* debugTag, bool isRelativeStep = false) {
   SystemConfig& cfg = routingTable.get();
   viscaBuf[0] = VISCA_ADDR_CAM1 + (camNumber - 1);
 
-  if (isDuplicateViscaCommand(camNumber, viscaBuf, viscaLen)) {
+  if (!isRelativeStep && isDuplicateViscaCommand(camNumber, viscaBuf, viscaLen)) {
     if (cfg.debugMode) {
       Serial.print("[");
       Serial.print(debugTag);
@@ -675,12 +686,15 @@ void updateModeCacheFromSet(uint8_t camNumber, uint8_t viscaCode, uint8_t value)
   CameraModeCache& c = modeCache[camNumber - 1];
   uint8_t item;
   switch (viscaCode) {
-    case 0x00: c.power = value; item = 0; break;
+    case VISCA_CAM_POWER: c.power = value; item = 0; break;
     case 0x39: c.aeMode = value; item = 1; break;
-    case 0x35: c.wbMode = value; item = 2; break;
-    case 0x38: c.focusMode = value; item = 3; break;
+    case VISCA_CAM_WB_MODE: c.wbMode = value; item = 2; break;
+    case VISCA_CAM_FOCUS_AF_MODE: c.focusMode = value; item = 3; break;
     case VISCA_CAM_BACKLIGHT: c.backlight = value; item = 4; break;
-    default: return;  // One Push AF(0x18)처럼 모드를 바꾸지 않는 일회성 트리거
+    // 캐시에 담을 모드 상태가 없는 파라미터들 - One Push AF(0x18) 같은 일회성 트리거와,
+    // R/B Gain·ExpComp(0x03/0x04/0x0E) 같은 상대 조정(Up/Down)이 여기로 온다. 확인 조회도
+    // 예약하지 않는다: 물어볼 "설정한 값"이 애초에 없고, 컨트롤러도 그 값을 표시하지 않는다.
+    default: return;
   }
 
   // 방금 설정한 항목을 곧바로 되물어 실제로 적용됐는지 확인한다.
@@ -773,11 +787,28 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
     CameraSlot* slot = routingTable.camera(camNumber);
     if (slot == nullptr || !slot->isConfigured()) return;
 
-    // 카메라가 켜져 있지 않으면 어떤 조회에도 답하지 않는다 - 실물 ED-P가 스탠바이
-    // 중에 침묵하는 것과 같은 동작이다. 전원 상태는 VISCA CAM_PowerInq(`09 04 00`)를
-    // 주기적으로 던져 확인하고(pollCameraModeInquiries), 컨트롤러가 C3 00으로
-    // 스탠바이를 명령하면 그 자리에서 바로 반영된다.
-    if (modeCache[camNumber - 1].power != 0x02) {
+    // 카메라가 자고 있으면 조회에 답하지 않는다 - 단, **전원 조회(`D3 04 00`)만은
+    // 예외로 답한다.**
+    //
+    // 예전엔 스탠바이 중 모든 조회에 침묵했다. "실물 ED-P도 그렇게 한다"는 게 근거였는데
+    // 실측이 아닌 추정이었고, 틀린 것으로 확인됐다(2026-08-12). 잠든 3번 ED-P가 전원
+    // 조회에 자기 상태를 정직하게 돌려준다:
+    //
+    //   FF 03 00 D3 04 00 DA  ->  FF 03 00 D7 00 03 DD      값 03 = Standby
+    //
+    // 하필 전원 조회가 "너 켜져 있냐"는 질문 그 자체라, 여기에 침묵하면 컨트롤러는
+    // "자는 중"과 "그 주소에 아무것도 없음"을 구분할 수 없다. 답할 값(0x03)을 캐시에
+    // 이미 갖고 있으면서 알려주지 않을 이유가 없다.
+    //
+    // 나머지 조회(D3 19 모드 상태, D3 04 33 BLC)는 침묵을 유지한다 - 잠든 동안 그
+    // 값들은 의미가 없고, 실물이 그때 무엇을 답하는지 아직 실측하지 않았다.
+    //
+    // 전원 상태는 VISCA CAM_PowerInq(`09 04 00`)를 주기적으로 던져 확인하고
+    // (pollCameraModeInquiries), 컨트롤러가 C3 00으로 스탠바이를 명령하면 그 자리에서
+    // 바로 반영된다 - 후자 덕분에 카메라가 잠든 채 CAM_PowerInq에 답하지 않더라도
+    // 캐시 값은 정확하다.
+    bool isPowerQuery = (data1 == PELCO_EDIS_QUERY_ITEM && data2 == VISCA_CAM_POWER);
+    if (modeCache[camNumber - 1].power != 0x02 && !isPowerQuery) {
       if (cfg.debugMode) {
         Serial.print("[");
         Serial.print(debugTag);
@@ -845,14 +876,24 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
     return;
   }
 
-  // SET: DATA1/DATA2가 VISCA `01 04 pp qq`의 pp/qq와 그대로 같다. 다만 실측으로
-  // 확인된 파라미터만 통과시킨다 - 모르는 pp를 그대로 흘리면 엉뚱한 VISCA 명령이
-  // 만들어져 카메라가 예상 못 한 동작을 할 수 있다.
-  bool known = (data1 == 0x00 ||   // CAM_Power        (02 On / 03 Standby)
+  // SET: DATA1/DATA2가 VISCA `01 04 pp qq`의 pp/qq와 **대체로** 같다 - AWB(0x36)와
+  // One Push AF(0x18)는 예외라 아래에서 따로 재매핑한다(config.h 참고).
+  //
+  // 실측으로 확인된 파라미터만 통과시킨다 - 모르는 pp를 그대로 흘리면 엉뚱한 VISCA
+  // 명령이 만들어져 카메라가 예상 못 한 동작을 할 수 있다. 반대로 이 목록이 실제
+  // 컨트롤러가 보내는 값과 어긋나면 그 키가 통째로 먹지 않는다 - AWB가 0x35로 잘못
+  // 적혀 있어 실제로 그랬다(2026-08-12).
+  bool known = (data1 == VISCA_CAM_POWER ||  // CAM_Power        (02 On / 03 Standby)
                 data1 == 0x39 ||   // CAM_AEMode       (00 Full Auto / 03 Manual)
-                data1 == 0x38 ||   // CAM_FocusAFMode  (02 Auto / 03 Manual / 04 One Push)
-                data1 == 0x35 ||   // CAM_WBMode
+                data1 == VISCA_CAM_FOCUS_AF_MODE ||  // (02 Auto / 03 Manual / 04 One Push)
+                data1 == PELCO_EDIS_SET_WB_MODE ||   // AWB (00 Auto / 05 Manual, 아래에서 재매핑)
                 data1 == VISCA_CAM_BACKLIGHT ||  // CAM_Back Light (02 On / 03 Off)
+                // 아래 셋은 절대 모드가 아니라 상대 조정이다 - 02 Up / 03 Down.
+                // 여기서 02/03은 다른 파라미터의 On/Off, Auto/Manual과 뜻이 다르다.
+                data1 == VISCA_CAM_RGAIN ||      // CAM_RGain  (02 Up / 03 Down)
+                data1 == VISCA_CAM_BGAIN ||      // CAM_BGain  (02 Up / 03 Down)
+                data1 == VISCA_CAM_SHUTTER ||    // CAM_Shutter (02 Up / 03 Down)
+                data1 == VISCA_CAM_EXP_COMP ||   // CAM_ExpComp, CAM_Bright(0x0D) 아님
                 data1 == PELCO_EDIS_SET_FOCUS_TRIGGER);  // One Push AF (아래에서 재매핑)
   if (!known) {
     if (cfg.debugMode) {
@@ -870,8 +911,17 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
     return;
   }
 
+  // AWB는 pp 자체가 VISCA 코드가 아니다 - 컨트롤러는 0x36을 보내는데 VISCA CAM_WB는
+  // 0x35다(실측 2026-08-12, config.h의 PELCO_EDIS_SET_WB_MODE 참고). qq는 VISCA 값
+  // 그대로(00 Auto / 05 Manual)라 코드 한 바이트만 갈아끼우면 된다.
+  //
+  // 여기서 미리 바꿔두면 아래 전송과 updateModeCacheFromSet()이 둘 다 VISCA 코드만
+  // 보게 되어, 캐시의 wbMode와 확인 조회(`09 04 35`)가 자동으로 맞아떨어진다.
+  if (data1 == PELCO_EDIS_SET_WB_MODE) data1 = VISCA_CAM_WB_MODE;
+
   // One Push AF만은 pp를 그대로 흘리지 않고 `04 38 04`(Focus AF 모드 = One Push)로
-  // 바꿔 보낸다. 나머지 파라미터가 전부 1:1인 것과 다른 유일한 예외다.
+  // 바꿔 보낸다. AWB와 달리 pp(0x18)는 진짜 VISCA 코드가 맞는데, FoMaKo가 그 코드를
+  // 구현하지 않아서 다른 코드로 우회하는 경우다.
   //
   // 실측 근거 (2026-08-08, doc/todo.md 1.1절): `04 18 01`(표준 Sony VISCA의 CAM_Focus
   // One Push Trigger)을 그대로 넘기면 FoMaKo가 초점을 잡지 않고 `E0 60 02 FF`를
@@ -899,8 +949,13 @@ void handleEdisVendorCommand(uint8_t camNumber, uint8_t cmnd2, uint8_t data1, ui
     onePushRestoreCam = 0;
   }
 
+  // 상대 조정은 같은 바이트의 반복이 곧 "한 칸 더"라서 중복 억제를 건너뛴다. 나머지
+  // 파라미터는 절대 모드(멱등)라 억제해도 결과가 같으므로 그대로 둔다.
+  bool isRelativeStep = (data1 == VISCA_CAM_RGAIN || data1 == VISCA_CAM_BGAIN ||
+                         data1 == VISCA_CAM_SHUTTER || data1 == VISCA_CAM_EXP_COMP);
+
   uint8_t buf[6] = {0, 0x01, 0x04, data1, data2, VISCA_TERMINATOR};
-  forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+  forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag, isRelativeStep);
   updateModeCacheFromSet(camNumber, data1, data2);
 }
 
@@ -1204,8 +1259,9 @@ bool sendModeInquiry(uint8_t camNumber, uint8_t item, const SystemConfig& cfg) {
   if (slot == nullptr || !slot->isConfigured()) return false;
 
   // ModeInquiry의 열거 순서(POWER, AE, WB, FOCUS, BACKLIGHT)와 같은 순서여야 한다.
-  static const uint8_t kInquiryCodes[MODE_INQUIRY_ITEM_COUNT] = {VISCA_CAM_POWER, 0x39, 0x35,
-                                                                 0x38, VISCA_CAM_BACKLIGHT};
+  // 전부 카메라로 나가는 VISCA 코드다 - WB는 컨트롤러가 쓰는 0x36이 아니라 0x35다.
+  static const uint8_t kInquiryCodes[MODE_INQUIRY_ITEM_COUNT] = {
+      VISCA_CAM_POWER, 0x39, VISCA_CAM_WB_MODE, VISCA_CAM_FOCUS_AF_MODE, VISCA_CAM_BACKLIGHT};
   uint8_t buf[5] = {(uint8_t)(VISCA_ADDR_CAM1 + camNumber - 1), 0x09, 0x04,
                     kInquiryCodes[item], VISCA_TERMINATOR};
 
