@@ -17,22 +17,12 @@
 // USB 콘솔(UART0)의 속도. RS485 속도와 무관하며, Debug Mode 로그가 loop()를 오래
 // 붙잡지 않도록 최대한 빠르게 잡는다 (main.cpp setup()의 주석 참고). 이 값을 바꾸면
 // platformio.ini의 monitor_speed도 같이 맞춰야 한다.
-// UART0 Shared Mode에서는 이 값을 쓰지 않는다 - 그 모드에서는 Serial이 곧 RS485
-// 데이터 라인이라 rs485Baudrate로 열린다.
 #define SERIAL_CONSOLE_BAUD 115200
 
 // RS485 UART 수신 링버퍼 크기. 기본값(256)이면 Debug Mode 로그처럼 loop()를 잠시
 // 붙잡는 작업 중에 들어온 바이트가 넘쳐 유실된다. 9600bps 기준 1024바이트면 약 1초의
 // 정체를 견딘다.
 #define RS485_RX_BUFFER_SIZE 1024
-
-// ---- RS485 / UART0 Shared Mode ----
-// 일부 보드 리비전은 RS485 트랜시버가 UART0(RX0/TX0)에 물리적으로 고정 결선되어
-// 있어 USB 콘솔과 Serial을 공유한다. 이 모드에서는 RX/TX/DE-RE 핀이 모두 이 값으로
-// 고정되며 사용자가 바꿀 수 없다 (GatewayActions::setRs485Uart0SharedMode() 참고).
-#define RS485_UART0_SHARED_RX_PIN 3   // RX0
-#define RS485_UART0_SHARED_TX_PIN 1   // TX0
-#define RS485_UART0_SHARED_DE_RE_PIN 17
 
 // ---- Status LED ----
 // RS485 Settings 화면(Serial/Web)에서 런타임에 바꿀 수 있다 - 이 값은 초기 기본값일
@@ -279,17 +269,6 @@
 // 끊어서 다음 버스트를 새 줄에 출력한다 (프로토콜 프레이밍 타임아웃과 무관한, 순수
 // 가독성용 구분자).
 #define RAW_MONITOR_GAP_MS 50
-
-// ---- Raw Bridge ----
-// RAW_BRIDGE Input Protocol에서 RS485로 들어오는 바이트를 UDP로 묶어 보낼 때 쓰는
-// 값. 한 번에 한 바이트씩 UDP로 쏘면 오버헤드가 크므로, 이 시간(ms) 이상 새 바이트가
-// 없을 때(=한 명령의 바이트가 다 도착했다고 볼 수 있을 때) 모아뒀던 바이트를 한
-// UDP 패킷으로 전송한다. Raw Byte Monitor의 구분 기준(RAW_MONITOR_GAP_MS)과 값은
-// 같지만, 이쪽은 실제 네트워크 전송 타이밍에 영향을 주는 별개의 설정이라 분리했다.
-#define RAW_BRIDGE_GAP_MS 20
-// 버퍼가 이 크기에 도달하면 gap을 기다리지 않고 즉시 전송한다 (VISCA_BUFFER_SIZE와
-// 동일하게 맞춰 이 프로젝트의 다른 버퍼들과 일관성을 유지한다).
-#define RAW_BRIDGE_BUFFER_SIZE VISCA_BUFFER_SIZE
 
 // ---- Web Config Server (AP+STA) ----
 // USB Serial에 물리적으로 접근할 수 없는 환경(이미 설치된 장비, UART0가 RS485와

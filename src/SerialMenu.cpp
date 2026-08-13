@@ -12,7 +12,6 @@ String SerialMenu::protocolName(ProtocolMode mode) {
     case ProtocolMode::IP_VISCA_RAW_UDP: return "IP_VISCA_RAW_UDP";
     case ProtocolMode::IP_VISCA_RAW_TCP: return "IP_VISCA_RAW_TCP";
     case ProtocolMode::SONY_VISCA_UDP: return "SONY_VISCA_UDP";
-    case ProtocolMode::RAW_DATA_UDP: return "RAW_DATA_UDP";
   }
   return "?";
 }
@@ -32,7 +31,6 @@ String SerialMenu::inputProtocolName(InputProtocol mode) {
     case InputProtocol::PELCO_D: return "Pelco-D";
     case InputProtocol::PELCO_P: return "Pelco-P";
     case InputProtocol::PELCO_AUTO: return "Pelco-D/P Autodetect";
-    case InputProtocol::RAW_BRIDGE: return "Raw Bridge";
   }
   return "?";
 }
@@ -61,11 +59,6 @@ String SerialMenu::responseModeName(ResponseMode mode) {
 void SerialMenu::begin() {}
 
 void SerialMenu::poll() {
-  // RS485가 UART0을 공유하는 중이면 Serial은 더 이상 콘솔이 아니라 RS485 데이터
-  // 라인이다 - 사용자 키 입력과 RS485 트래픽을 바이트 단위로 구분할 방법이 없으므로
-  // 아예 읽지 않는다. 이 모드에서 설정을 바꾸려면 Web Config Server를 써야 한다.
-  if (_routing.get().rs485Uart0Shared) return;
-
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\r' || c == '\n') {
@@ -392,17 +385,13 @@ void SerialMenu::printRs485Menu() {
   Serial.println(" 2. RS485 Settings");
   Serial.println("============================================================");
   Serial.println();
-  Serial.print("  UART Port        : ");
-  Serial.println(cfg.rs485Uart0Shared ? "UART0 (shared with USB console)" : "UART2 / Serial2");
+  Serial.println("  UART Port        : UART2 / Serial2");
   Serial.print("  RX Pin           : GPIO");
-  Serial.print(cfg.rs485RxPin);
-  Serial.println(cfg.rs485Uart0Shared ? " (fixed)" : "");
+  Serial.println(cfg.rs485RxPin);
   Serial.print("  TX Pin           : GPIO");
-  Serial.print(cfg.rs485TxPin);
-  Serial.println(cfg.rs485Uart0Shared ? " (fixed)" : "");
+  Serial.println(cfg.rs485TxPin);
   Serial.print("  DE/RE Pin        : GPIO");
-  Serial.print(cfg.rs485DeRePin);
-  Serial.println(cfg.rs485Uart0Shared ? " (fixed)" : "");
+  Serial.println(cfg.rs485DeRePin);
   Serial.print("  Baudrate         : ");
   Serial.println(cfg.rs485Baudrate);
   Serial.println("  Format           : 8N1");
@@ -422,21 +411,14 @@ void SerialMenu::printRs485Menu() {
   Serial.println(" Options");
   Serial.println("------------------------------------------------------------");
   Serial.println("  1. Set Baudrate");
-  if (!cfg.rs485Uart0Shared) {
-    Serial.println("  2. Set RX Pin");
-    Serial.println("  3. Set TX Pin");
-    Serial.println("  4. Set DE/RE Pin");
-  }
+  Serial.println("  2. Set RX Pin");
+  Serial.println("  3. Set TX Pin");
+  Serial.println("  4. Set DE/RE Pin");
   Serial.println("  5. Set Input Protocol");
   Serial.println("  6. Set Pelco Response Mode");
-  if (cfg.rs485Uart0Shared) {
-    Serial.println("  7. Switch back to UART2 (independent RS485 port)");
-  } else {
-    Serial.println("  7. Switch to UART0 Shared Mode (board wires RS485 onto RX0/TX0)");
-  }
-  Serial.println("  8. Set Status LED Pin");
-  Serial.println("  9. Set Signal Inversion");
-  Serial.println(" 10. Set Camera Response Mode");
+  Serial.println("  7. Set Status LED Pin");
+  Serial.println("  8. Set Signal Inversion");
+  Serial.println("  9. Set Camera Response Mode");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -444,11 +426,10 @@ void SerialMenu::printRs485Menu() {
 void SerialMenu::applyRs485Settings(const SystemConfig& cfg) {
   _storage.save(cfg);
   _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
-               cfg.rs485Uart0Shared, cfg.rs485Invert);
+               cfg.rs485Invert);
 }
 
 void SerialMenu::handleRs485Menu(const String& line) {
-  SystemConfig& cfg = _routing.get();
   if (line == "1") {
     Serial.println("1. 2400");
     Serial.println("2. 4800");
@@ -457,13 +438,13 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.println("5. 115200");
     Serial.print("> ");
     _prompt = Prompt::RS485_BAUD_CHOICE;
-  } else if (line == "2" && !cfg.rs485Uart0Shared) {
+  } else if (line == "2") {
     Serial.print("Enter RX Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_RX_PIN;
-  } else if (line == "3" && !cfg.rs485Uart0Shared) {
+  } else if (line == "3") {
     Serial.print("Enter TX Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_TX_PIN;
-  } else if (line == "4" && !cfg.rs485Uart0Shared) {
+  } else if (line == "4") {
     Serial.print("Enter DE/RE Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_DERE_PIN;
   } else if (line == "5") {
@@ -471,7 +452,6 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.println("2. Pelco-D");
     Serial.println("3. Pelco-P");
     Serial.println("4. Pelco-D/P Autodetect");
-    Serial.println("5. Raw Bridge (no parsing - tunnels raw bytes to a peer gateway)");
     Serial.print("> ");
     _prompt = Prompt::RS485_INPUT_PROTOCOL_CHOICE;
   } else if (line == "6") {
@@ -480,38 +460,14 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.print("> ");
     _prompt = Prompt::RS485_PELCO_RESPONSE_CHOICE;
   } else if (line == "7") {
-    Serial.println();
-    if (cfg.rs485Uart0Shared) {
-      Serial.print("This switches RS485 back to an independent UART2 port (GPIO");
-      Serial.print(RS485_RX_PIN_DEFAULT);
-      Serial.print("/");
-      Serial.print(RS485_TX_PIN_DEFAULT);
-      Serial.print("/");
-      Serial.print(RS485_DE_RE_PIN_DEFAULT);
-      Serial.println(") and reboots.");
-    } else {
-      Serial.println("WARNING: This switches RS485 onto UART0 (GPIO3 RX0 / GPIO1 TX0), sharing it");
-      Serial.println("with the USB console. After this, the Serial menu becomes permanently");
-      Serial.println("unavailable (there is no way to tell your keystrokes apart from RS485");
-      Serial.println("traffic) - all further configuration must be done from the Web Config page");
-      Serial.println("(connect to the AP shown on the Status screen). Packet-level Serial debug");
-      Serial.println("logging is also disabled in this mode. The device reboots immediately after");
-      Serial.println("confirming.");
-    }
-    Serial.print("Type YES to confirm, or press Enter to cancel: ");
-    _prompt = Prompt::RS485_UART0_SHARED_CONFIRM;
-  } else if (line == "8") {
     Serial.print("Enter Status LED Pin (GPIO number, blank to cancel): ");
     _prompt = Prompt::RS485_STATUS_LED_PIN;
-  } else if (line == "9") {
+  } else if (line == "8") {
     Serial.println("1. Inverted (A/B swapped wiring)");
     Serial.println("2. Normal");
-    if (cfg.rs485Uart0Shared) {
-      Serial.println("Note: in UART0 Shared Mode this also inverts the USB console signals.");
-    }
     Serial.print("> ");
     _prompt = Prompt::RS485_INVERT_CHOICE;
-  } else if (line == "10") {
+  } else if (line == "9") {
     Serial.println("1. none - drop camera responses (default)");
     Serial.println("2. synthetic - gateway fakes ACK/Completion (VISCA input only)");
     Serial.println("3. forward - send camera response bytes to RS485 as-is");
@@ -636,7 +592,6 @@ void SerialMenu::handleCameraDetailMenu(const String& line) {
     Serial.println("1. IP_VISCA_RAW_UDP");
     Serial.println("2. IP_VISCA_RAW_TCP");
     Serial.println("3. SONY_VISCA_UDP");
-    Serial.println("4. RAW_DATA_UDP (Raw Bridge peer - see RS485 Settings > Input Protocol)");
     Serial.print("> ");
     _prompt = Prompt::ROUTING_SET_PROTOCOL_VALUE;
   } else if (line == "5") {
@@ -987,12 +942,6 @@ void SerialMenu::handlePrompt(const String& line) {
         cfg.inputProtocol = InputProtocol::PELCO_AUTO;
         _storage.save(cfg);
         Serial.println("Input protocol set to Pelco-D/P Autodetect and saved to flash.");
-      } else if (line == "5") {
-        cfg.inputProtocol = InputProtocol::RAW_BRIDGE;
-        _storage.save(cfg);
-        Serial.println("Input protocol set to Raw Bridge and saved to flash.");
-        Serial.println("Set a camera slot's Protocol to RAW_DATA_UDP with the peer");
-        Serial.println("gateway's IP/Port in Routing Table to configure the bridge peer.");
       } else {
         Serial.println("Invalid choice.");
       }
@@ -1180,7 +1129,7 @@ void SerialMenu::handlePrompt(const String& line) {
     }
     case Prompt::ROUTING_SET_PROTOCOL_VALUE: {
       int choice = line.toInt();
-      if (choice >= 1 && choice <= 4) {
+      if (choice >= 1 && choice <= 3) {
         _routing.camera(_pendingCamNumber)->protocol = (ProtocolMode)(choice - 1);
         _storage.save(cfg);
         Serial.println("Protocol set and saved to flash.");
@@ -1201,18 +1150,6 @@ void SerialMenu::handlePrompt(const String& line) {
       } else {
         Serial.println("Invalid choice.");
         printCameraDetailMenu();
-      }
-      break;
-    }
-    case Prompt::RS485_UART0_SHARED_CONFIRM: {
-      if (line == "YES") {
-        bool enabling = !cfg.rs485Uart0Shared;
-        Serial.println(enabling ? "Switching to UART0 Shared Mode and rebooting..."
-                                 : "Switching back to UART2 and rebooting...");
-        setRs485Uart0SharedMode(_routing, _storage, _rs485, enabling);
-      } else {
-        Serial.println("Cancelled.");
-        printRs485Menu();
       }
       break;
     }

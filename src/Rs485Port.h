@@ -4,16 +4,13 @@
 #include <HardwareSerial.h>
 #include "config.h"
 
-// RS485 송수신 및 DE/RE 방향 제어를 담당한다. 기본은 독립된 UART2를 쓰지만,
-// RS485가 UART0(USB Serial)에 고정 결선된 보드를 위해 useUart0=true로 UART0를
-// 공유하는 것도 지원한다 (config.h의 RS485_UART0_SHARED_* 참고).
+// RS485 송수신 및 DE/RE 방향 제어를 담당한다. 항상 독립된 UART2를 쓴다 - UART0는
+// USB Serial 콘솔 전용이다.
 class Rs485Port {
  public:
   // invert=true면 ESP32 UART 하드웨어가 RX/TX 신호를 모두 반전시킨다 - A/B(D+/D-)가
-  // 뒤집혀 결선된 RS485 버스를 소프트웨어로 보정한다. UART0 공유 모드에서는 이 포트가
-  // 곧 USB 콘솔이기도 하므로, 반전을 켜면 콘솔 쪽 신호도 같이 뒤집힌다는 점에 주의.
-  void begin(uint32_t baudrate, uint8_t rxPin, uint8_t txPin, uint8_t deRePin, bool useUart0,
-             bool invert);
+  // 뒤집혀 결선된 RS485 버스를 소프트웨어로 보정한다.
+  void begin(uint32_t baudrate, uint8_t rxPin, uint8_t txPin, uint8_t deRePin, bool invert);
 
   bool available();
   uint8_t read();
@@ -30,7 +27,7 @@ class Rs485Port {
 
  private:
   HardwareSerial _uart2{2};
-  HardwareSerial* _serial = &_uart2;  // useUart0=true면 begin()에서 전역 Serial(UART0)로 바뀐다.
+  HardwareSerial* _serial = &_uart2;
   uint8_t _deRePin = RS485_DE_RE_PIN_DEFAULT;
   TxEchoFn _txEcho = nullptr;
 };

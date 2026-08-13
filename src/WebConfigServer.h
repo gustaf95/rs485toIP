@@ -53,8 +53,6 @@ class WebConfigServer {
   void handleNetworkRetry();
   void handleRs485Get();
   void handleRs485Post();
-  void handleRs485Uart0Get();
-  void handleRs485Uart0Post();
   void handleRoutingGet();
   void handleRoutingCamGet();
   void handleRoutingCamPost();

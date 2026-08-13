@@ -367,7 +367,6 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | RS485 TX Pin          | UART2 TX                 | GPIO26                                         |
 | RS485 DE/RE Pin       | 방향 제어 핀             | GPIO27                                         |
 | RS485 Signal Inversion | UART 신호 극성 반전     | off (정상 결선 가정, A/B 반전 배선이면 켜야 함) |
-| RS485 UART0 Shared Mode | RS485가 UART0(Serial) 공유 여부 | off                                 |
 | Status LED Pin        | 상태 LED 핀              | GPIO13                                         |
 | Input Protocol        | RS485 입력 프로토콜      | Pelco-D                                        |
 | Pelco Response Mode   | Pelco ACK 합성 여부      | none (응답 안 함)                              |
@@ -379,6 +378,27 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | Camera 2~7 설정       | 위와 동일                | empty / 5678 / IP_VISCA_RAW_UDP / preserve / off |
 | Response Mode         | 카메라 응답 처리 모드    | none                                           |
 | Debug Mode            | 디버그 출력 여부         | off                                            |
+
+## 10.1 삭제된 기능의 잔여 값 처리
+
+**Raw Bridge**(Input Protocol의 다섯 번째 선택지)와 **UART0 Shared Mode**(RS485를 USB
+콘솔과 같은 UART에 물리던 모드)는 실제 운용에 쓰이지 않아 제거했다. 다만 **`SystemConfig`
+구조체에서는 해당 필드를 빼지 않았다** — 구조체 크기가 바뀌면 `Storage::load()`가 실패해
+저장된 Wi-Fi/카메라 IP가 전부 초기화되기 때문이다(4.2절과 같은 이유). `rs485Uart0Shared`
+필드는 자리만 남아 있고 아무도 읽지 않는다.
+
+같은 이유로 **삭제된 기능이 쓰던 열거형 값도 재사용하지 않는다** — `ProtocolMode`의 `3`
+(`RAW_DATA_UDP`)과 `InputProtocol`의 `4`(`RAW_BRIDGE`)는 비워둔 채로 둔다. 새 항목에 그
+번호를 주면 옛 설정이 엉뚱한 기능으로 되살아난다.
+
+이전 펌웨어에서 그 값들을 저장해둔 기기를 위해, 부팅 시 `RoutingTable::sanitizeRemovedFeatures()`가
+한 번 걸러낸다. 고칠 게 있었을 때만 flash에 다시 쓴다.
+
+| 저장된 값 | 되돌리는 값 | 이유 |
+| --- | --- | --- |
+| Input Protocol = Raw Bridge | Pelco-D | 그 입력을 해석할 코드가 없다. 기본값으로 되돌리는 게 안전하다 |
+| Camera Protocol = RAW_DATA_UDP | IP_VISCA_RAW_UDP + **IP 지움** | 그 슬롯의 IP는 카메라가 아니라 상대 게이트웨이 주소다. 그대로 두면 그쪽으로 VISCA를 쏘게 된다 |
+| UART0 Shared Mode = on | off + RS485 핀 기본값(25/26/27) | 그 모드가 강제해둔 GPIO3/1은 UART0 핀이라 메뉴로도 못 고친다(`validateRs485Pin()`이 거부) |
 
 ---
 
@@ -485,8 +505,8 @@ Network Settings의 값(SSID, 비밀번호, DHCP/Static IP, Gateway, Subnet, AP 
 Wi-Fi STA 연결 실패 시에도 Serial 메뉴는 계속 사용 가능하고, ESP32는 주기적으로 STA 재접속을
 시도한다. **AP는 STA 연결 여부와 무관하게 항상 켜져 있다** — `WiFi.mode(WIFI_AP_STA)`로
 STA/AP를 동시에 운용한다(13절 "Web Config Server" 참고). USB Serial에 물리적으로 접근할
-수 없는 환경(이미 설치된 장비, UART0가 RS485와 충돌하는 보드)에서도 접근 경로를 보장하기
-위함이다.
+수 없는 환경(이미 설치돼서 USB 케이블을 다시 꽂기 번거로운 장비 등)에서도 접근 경로를
+보장하기 위함이다.
 
 AP SSID/Password는 **"5. Set AP SSID"/"6. Set AP Password"로 직접 바꿀 수 있다** — 저장 즉시
 `WiFi.softAP()`를 재적용해서 재부팅 없이 반영된다. 처음 값(아직 한 번도 안 바꿨을 때)은
@@ -580,17 +600,16 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   4. Set DE/RE Pin
   5. Set Input Protocol
   6. Set Pelco Response Mode
-  7. Switch to UART0 Shared Mode (board wires RS485 onto RX0/TX0)
-  8. Set Status LED Pin
-  9. Set Signal Inversion
- 10. Set Camera Response Mode
+  7. Set Status LED Pin
+  8. Set Signal Inversion
+  9. Set Camera Response Mode
   0. Back to Main Menu
 ```
 
 Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART2에 재적용되며,
 별도의 저장 메뉴는 없다.
 
-"9. Set Signal Inversion"은 UART 신호의 극성을 뒤집는다. 기본값은 **Normal**이다 — 정상
+"8. Set Signal Inversion"은 UART 신호의 극성을 뒤집는다. 기본값은 **Normal**이다 — 정상
 결선(A/B 안 뒤집힘)을 기본 가정으로 삼는다. RS485 A/B(D+/D-)가 뒤집혀 결선된 배선이면
 Inverted로 바꿔야 한다. 반전이 안 맞으면 수신 바이트가 전부 깨지는데, 증상이 특징적이다 —
 0xFF로 시작해야 할 Pelco-D 프레임이 `00`으로 시작하고, 뒤 바이트들은 한 비트씩 밀린
@@ -616,7 +635,6 @@ A/B를 바로잡는 것이고, 이 옵션은 결선을 손댈 수 없는 현장�
 2. Pelco-D
 3. Pelco-P
 4. Pelco-D/P Autodetect
-5. Raw Bridge
 ```
 
 Pelco-D를 선택하면 `PelcoDParser`가 0xFF로 시작하는 고정 7바이트 프레임(Address, Command1,
@@ -790,34 +808,6 @@ Pelco-P를 개별 지정할 수 있어(`pelcoD_command.md` 9.1/9.3절), 같은 R
 Pelco-D의 시작 바이트와 겹쳐 안전하게 자동 판별할 수 없으므로 이 옵션에 포함되지 않는다 —
 VISCA를 쓰려면 "1. VISCA"를 명시적으로 선택해야 한다.
 
-"Raw Bridge"는 VISCA/Pelco-D/Pelco-P 파싱을 전혀 하지 않는다. 이 firmware를 올린 게이트웨이
-두 대를 마주 보게 놓고, RS485 버스 하나를 IP망 너머로 그대로 연장하는 투명 브릿지로 쓰기
-위한 모드다 — 예를 들어 컨트롤러 쪽 RS485와 카메라 쪽 RS485가 물리적으로 멀리 떨어져 있을
-때, 게이트웨이 A/B를 각각 그 옆에 두고 Wi-Fi로 이어주는 식이다. VISCA 변환도, 카메라
-1~7번 라우팅도 전혀 관여하지 않으므로 애초에 RS485 프로토콜이 VISCA/Pelco가 아니어도
-동작한다.
-
-**설정 방법**: Raw Bridge는 "피어가 누구인지"를 Routing Table의 카메라 슬롯 하나를 빌려서
-저장한다 — 카메라 번호는 임의로 골라도 된다(예: CAM6). 그 슬롯의 Protocol을
-`RAW_DATA_UDP`로, IP/Port를 상대편 게이트웨이의 IP/Port로 설정한다 (12.3절 "4. Set
-Protocol" 참고). 두 게이트웨이 모두 Input Protocol을 Raw Bridge로, 각자의 라우팅 테이블에
-"상대방의 IP"를 RAW_DATA_UDP로 등록해두면 서로 마주 보는 P2P 링크가 완성된다. 같은 슬롯
-번호를 쓸 필요는 없고, **양쪽이 같은 Port 번호를 쓰는 게 중요하다** — 그 Port로 로컬에서도
-리슨하고 상대에게도 그 Port로 보내기 때문이다.
-
-동작 방식: RS485로 들어오는 바이트를 계속 모으다가, 20ms(`RAW_BRIDGE_GAP_MS`) 이상 새
-바이트가 없으면(=한 버스트가 끝났다고 판단되면) 모아둔 바이트를 UDP 패킷 하나로 피어에게
-보낸다. 피어에게서 UDP 패킷이 오면 그 payload를 그대로 RS485 TX로 내보낸다. 체크섬 검증도,
-주소 기반 라우팅도 없다 — 순수하게 바이트 파이프다. 현재는 UDP만 지원한다 — TCP로 만들려면
-양쪽 다 리슨하면서 동시에 상대에게 연결을 시도하는 로직(그리고 끊겼을 때 재연결)이 필요해
-UDP보다 훨씬 복잡하고, 사설 링크에서 가끔 있는 UDP 유실은 대개 감내할 만하다고 보고 있다.
-필요하면 추후 추가할 수 있다.
-
-Debug Mode에서는 `[RAW-BRIDGE TX]`/`[RAW-BRIDGE RX]`로 로그가 찍히고, `RS485 RX Total`/
-`Forwarded`/`IP TX Success`/`RS485 TX Response` 카운터를 그대로 재사용한다. 피어 슬롯이
-설정 안 돼 있으면(IP 비어있음) 받은 바이트는 조용히 버려지고 `Ignored (No IP)` 카운터가
-올라간다.
-
 "6. Set Pelco Response Mode"는 Pelco-D/Pelco-P/Autodetect 공통 설정이다. 유효한 Pelco
 패킷을 받을 때마다 General Response(ACK, Pelco-D는 `FF ADDR 00 CKSM` 4바이트, Pelco-P는
 `A0 ADDR 00 AF CKSM` 5바이트)를 RS485로 합성해서 돌려줄지 선택한다. 기본값은 **No response**
@@ -958,11 +948,6 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
 
 각 항목은 값을 입력하는 즉시 flash에 저장되며, 별도의 저장 메뉴는 없다.
 "3. Set Camera Port" 입력 시 아무 값도 입력하지 않고 Enter만 누르면 변경 없이 취소된다.
-
-"4. Set Protocol"의 네 번째 옵션 `RAW_DATA_UDP`는 일반적인 VISCA 라우팅(카메라 1~7번 주소
-기반)에는 쓰이지 않는다 — RS485 Settings의 Input Protocol을 "5. Raw Bridge"로 설정했을 때,
-이 슬롯을 "브릿지 피어" 주소로 지정하는 용도다. 자세한 설정/동작 방식은 12.2절 "Raw
-Bridge" 참고.
 
 ## 12.4 Counters
 
@@ -1146,7 +1131,7 @@ Press Enter (no input) to return to Debug Mode menu.
 [RAW] 00 BE 59 DF 45
 ```
 
-`FF`가 한 번도 안 보이고 `00`으로 시작하는 고정 패턴이 반복된다면 12.2의 "9. Set Signal
+`FF`가 한 번도 안 보이고 `00`으로 시작하는 고정 패턴이 반복된다면 12.2의 "8. Set Signal
 Inversion"을 반대로 바꿔보면 된다 (또는 하드웨어에서 A/B를 바꿔 결선한다).
 
 ### 12.5.3 Send Test Command
@@ -1187,8 +1172,7 @@ Watching for a response (Raw Byte Monitor)...
 ## 13. Web Config Server
 
 USB Serial에 물리적으로 접근할 수 없는 상황을 위한 두 번째 설정 인터페이스 —
-이미 설치돼서 USB 케이블을 다시 꽂기 번거로운 장비, 또는 UART0가 RS485와
-연결돼 있어 USB Serial 자체를 메뉴/디버그용으로 못 쓰는 보드를 위함이다.
+이미 설치돼서 USB 케이블을 다시 꽂기 번거로운 장비를 위함이다.
 `SerialMenu`와 동일한 `RoutingTable`/`Storage`/`Diagnostics`를 그대로
 참조하므로(`WebConfigServer.h/.cpp`) 두 UI가 항상 같은 flash 설정을 보고
 쓴다 — 한쪽에서 바꾼 값이 다른 쪽에도 바로 반영된다.
@@ -1229,7 +1213,7 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 | `GET`/`POST /network` | Network Settings | SSID(스캔 드롭다운 + 직접 입력), Password(빈 칸 = 기존 유지), DHCP, Static IP/Gateway/Subnet, Retry 버튼, AP SSID/Password(별도 폼, `POST /network/ap`) |
 | `GET`/`POST /rs485` | RS485 Settings | Baudrate, Signal Inversion, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode, Camera Response Mode |
 | `GET /routing` | Routing Table | CAM1~7 목록 |
-| `GET`/`POST /routing/cam?n=N` | Camera Detail | IP(빈 칸 = 삭제)/Port/Protocol(`RAW_DATA_UDP` 포함)/Address Mode |
+| `GET`/`POST /routing/cam?n=N` | Camera Detail | IP(빈 칸 = 삭제)/Port/Protocol/Address Mode/Auto Power Control |
 | `GET /counters` | Counters | 2초 자동 새로고침 |
 | `GET /debug` | Debug Mode | Debug ON/OFF, Last Packets, Send Test Command |
 | `GET /debug/live` | Live Packet Monitor | 1초 자동 새로고침. Serial과 달리 Debug Mode를 자동으로 켜지 않음 — `/debug`에서 먼저 켜야 함 |
@@ -1296,7 +1280,6 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
   Rs485Port.h / .cpp
   IpViscaClient.h / .cpp
   SonyViscaClient.h / .cpp
-  RawBridgeClient.h / .cpp
   RoutingTable.h / .cpp
   SerialMenu.h / .cpp
   WebConfigServer.h / .cpp
@@ -1317,7 +1300,6 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 | Rs485Port           | UART2 및 DE/RE 제어                                      |
 | IpViscaClient       | Raw UDP/TCP IP VISCA 전송 (UDP 소켓은 로컬 포트 5678에 bind) |
 | SonyViscaClient     | Sony VISCA over IP framing 및 전송                       |
-| RawBridgeClient     | Raw Bridge 모드 전용 UDP 소켓(고정 로컬 포트 리슨)       |
 | RoutingTable        | 카메라 1~7 IP/Port/Protocol/Address Mode 관리            |
 | SerialMenu          | USB Serial 메뉴 입력/출력                                |
 | WebConfigServer     | AP+STA 웹 설정 서버(13절) — SerialMenu와 같은 백엔드 공유 |
@@ -1336,7 +1318,7 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 핵심 요구사항:
 
 1. UART0는 USB Serial 메뉴와 디버그 전용으로 사용한다.
-2. UART2를 사용하여 RS485 패킷을 수신한다(VISCA/Pelco-D/Pelco-P/Raw Bridge, 12.2절).
+2. UART2를 사용하여 RS485 패킷을 수신한다(VISCA/Pelco-D/Pelco-P, 12.2절).
 3. RS485 방향 제어 핀은 기본 GPIO27로 한다.
 4. RS485 기본 모드는 Receive이다.
 5. VISCA 패킷은 `0xFF`를 기준으로 구분한다.

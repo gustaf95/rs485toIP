@@ -1,9 +1,8 @@
 #include "Rs485Port.h"
 
 void Rs485Port::begin(uint32_t baudrate, uint8_t rxPin, uint8_t txPin, uint8_t deRePin,
-                       bool useUart0, bool invert) {
+                       bool invert) {
   _deRePin = deRePin;
-  _serial = useUart0 ? &Serial : &_uart2;
 
   pinMode(_deRePin, OUTPUT);
   digitalWrite(_deRePin, LOW);  // 기본 수신 모드

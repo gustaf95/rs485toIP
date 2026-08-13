@@ -57,8 +57,6 @@ void WebConfigServer::begin() {
   _server.on("/network/ap", HTTP_POST, [this]() { handleNetworkApPost(); });
   _server.on("/rs485", HTTP_GET, [this]() { handleRs485Get(); });
   _server.on("/rs485", HTTP_POST, [this]() { handleRs485Post(); });
-  _server.on("/rs485/uart0", HTTP_GET, [this]() { handleRs485Uart0Get(); });
-  _server.on("/rs485/uart0", HTTP_POST, [this]() { handleRs485Uart0Post(); });
   _server.on("/routing", HTTP_GET, [this]() { handleRoutingGet(); });
   _server.on("/routing/cam", HTTP_GET, [this]() { handleRoutingCamGet(); });
   _server.on("/routing/cam", HTTP_POST, [this]() { handleRoutingCamPost(); });
@@ -259,9 +257,7 @@ String WebConfigServer::rs485PageBody(const String& error) {
             "verify no external pull affects boot.</p>";
   }
 
-  body += "<p><b>UART Port:</b> " +
-          String(cfg.rs485Uart0Shared ? "UART0 (shared with USB console)" : "UART2 / Serial2") +
-          "</p>";
+  body += "<p><b>UART Port:</b> UART2 / Serial2</p>";
 
   body += "<form method=\"POST\" action=\"/rs485\">";
 
@@ -271,35 +267,23 @@ String WebConfigServer::rs485PageBody(const String& error) {
   }
   body += "</select></label>";
 
-  if (cfg.rs485Uart0Shared) {
-    // 이 모드에서는 RX/TX/DE-RE가 보드 고정 배선값이라 편집할 수 없다 - 값을 그대로
-    // 보여만 주고, hidden 필드로 POST에 실어서 handleRs485Post()가 그대로 유지하게 한다.
-    body += "<p>RX Pin: GPIO" + String(cfg.rs485RxPin) + " (fixed)</p>";
-    body += "<p>TX Pin: GPIO" + String(cfg.rs485TxPin) + " (fixed)</p>";
-    body += "<p>DE/RE Pin: GPIO" + String(cfg.rs485DeRePin) + " (fixed)</p>";
-  } else {
-    body += "<label>RX Pin: <input type=\"number\" name=\"rx_pin\" value=\"" +
-            String(cfg.rs485RxPin) + "\"></label>";
-    body += "<label>TX Pin: <input type=\"number\" name=\"tx_pin\" value=\"" +
-            String(cfg.rs485TxPin) + "\"></label>";
-    body += "<label>DE/RE Pin: <input type=\"number\" name=\"dere_pin\" value=\"" +
-            String(cfg.rs485DeRePin) + "\"></label>";
-  }
+  body += "<label>RX Pin: <input type=\"number\" name=\"rx_pin\" value=\"" +
+          String(cfg.rs485RxPin) + "\"></label>";
+  body += "<label>TX Pin: <input type=\"number\" name=\"tx_pin\" value=\"" +
+          String(cfg.rs485TxPin) + "\"></label>";
+  body += "<label>DE/RE Pin: <input type=\"number\" name=\"dere_pin\" value=\"" +
+          String(cfg.rs485DeRePin) + "\"></label>";
 
   body += "<label>Signal Inversion: <select name=\"invert\">";
   body += selectOption(1, cfg.rs485Invert ? 1 : 0, "Inverted (A/B swapped wiring)");
   body += selectOption(0, cfg.rs485Invert ? 1 : 0, "Normal");
   body += "</select></label>";
-  if (cfg.rs485Uart0Shared) {
-    body += "<p><i>In UART0 Shared Mode this also inverts the USB console signals.</i></p>";
-  }
 
   body += "<label>Input Protocol: <select name=\"input_protocol\">";
   body += selectOption(0, (int)cfg.inputProtocol, "VISCA");
   body += selectOption(1, (int)cfg.inputProtocol, "Pelco-D");
   body += selectOption(2, (int)cfg.inputProtocol, "Pelco-P");
   body += selectOption(3, (int)cfg.inputProtocol, "Pelco-D/P Autodetect");
-  body += selectOption(4, (int)cfg.inputProtocol, "Raw Bridge");
   body += "</select></label>";
 
   body += "<label>Pelco Response Mode: <select name=\"pelco_response\">";
@@ -321,14 +305,6 @@ String WebConfigServer::rs485PageBody(const String& error) {
 
   body += "<button type=\"submit\">Save</button></form>";
 
-  body += "<p>";
-  if (cfg.rs485Uart0Shared) {
-    body += "<a href=\"/rs485/uart0\">Switch back to UART2 (independent RS485 port)</a>";
-  } else {
-    body += "<a href=\"/rs485/uart0\">Switch to UART0 Shared Mode (board wires RS485 onto RX0/TX0)</a>";
-  }
-  body += "</p>";
-
   return body;
 }
 
@@ -346,77 +322,42 @@ void WebConfigServer::handleRs485Post() {
     return;
   }
 
-  // UART0 Shared Mode에서는 RX/TX/DE-RE가 보드 고정 배선값이라 폼에 입력란 자체가
-  // 없다(rs485PageBody() 참고) - 검증 없이 현재 cfg 값을 그대로 유지한다.
-  bool anyStrapping = false;
-  if (!cfg.rs485Uart0Shared) {
-    int rx = _server.arg("rx_pin").toInt();
-    int tx = _server.arg("tx_pin").toInt();
-    int dere = _server.arg("dere_pin").toInt();
+  int rx = _server.arg("rx_pin").toInt();
+  int tx = _server.arg("tx_pin").toInt();
+  int dere = _server.arg("dere_pin").toInt();
 
-    if (!validateRs485Pin(rx, /*requireOutput=*/false, cfg.statusLedPin, &error) ||
-        !validateRs485Pin(tx, /*requireOutput=*/true, cfg.statusLedPin, &error) ||
-        !validateRs485Pin(dere, /*requireOutput=*/true, cfg.statusLedPin, &error)) {
-      sendPage("RS485 Settings", rs485PageBody(error));
-      return;
-    }
-
-    anyStrapping = isStrappingGpio((uint8_t)rx) || isStrappingGpio((uint8_t)tx) ||
-                   isStrappingGpio((uint8_t)dere);
-
-    cfg.rs485RxPin = (uint8_t)rx;
-    cfg.rs485TxPin = (uint8_t)tx;
-    cfg.rs485DeRePin = (uint8_t)dere;
+  if (!validateRs485Pin(rx, /*requireOutput=*/false, cfg.statusLedPin, &error) ||
+      !validateRs485Pin(tx, /*requireOutput=*/true, cfg.statusLedPin, &error) ||
+      !validateRs485Pin(dere, /*requireOutput=*/true, cfg.statusLedPin, &error)) {
+    sendPage("RS485 Settings", rs485PageBody(error));
+    return;
   }
+
+  bool anyStrapping = isStrappingGpio((uint8_t)rx) || isStrappingGpio((uint8_t)tx) ||
+                      isStrappingGpio((uint8_t)dere);
+
+  cfg.rs485RxPin = (uint8_t)rx;
+  cfg.rs485TxPin = (uint8_t)tx;
+  cfg.rs485DeRePin = (uint8_t)dere;
 
   cfg.rs485Baudrate = (uint32_t)_server.arg("baudrate").toInt();
   cfg.rs485Invert = (_server.arg("invert").toInt() != 0);
-  cfg.inputProtocol = (InputProtocol)_server.arg("input_protocol").toInt();
+  // 폼에 없는 값이 POST로 들어와도(직접 조작하거나 옛 페이지가 캐시된 경우) 삭제된
+  // Raw Bridge(4)로 넘어가지 않도록 범위를 확인하고, 벗어나면 그냥 무시한다.
+  int inputProtocol = _server.arg("input_protocol").toInt();
+  if (inputProtocol >= 0 && inputProtocol <= (int)InputProtocol::PELCO_AUTO) {
+    cfg.inputProtocol = (InputProtocol)inputProtocol;
+  }
   cfg.pelcoResponseMode = (PelcoResponseMode)_server.arg("pelco_response").toInt();
   cfg.responseMode = (ResponseMode)_server.arg("response_mode").toInt();
   cfg.statusLedPin = (uint8_t)ledPin;
 
   _storage.save(cfg);
   _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
-               cfg.rs485Uart0Shared, cfg.rs485Invert);
+               cfg.rs485Invert);
   _statusLed.begin(cfg.statusLedPin);
 
   redirectTo(anyStrapping ? "/rs485?warn=strap" : "/rs485");
-}
-
-// ---------------------------------------------------------------------------
-// RS485 UART0 Shared Mode toggle
-// ---------------------------------------------------------------------------
-
-void WebConfigServer::handleRs485Uart0Get() {
-  SystemConfig& cfg = _routing.get();
-  String body;
-
-  if (cfg.rs485Uart0Shared) {
-    body += "<p>This switches RS485 back to an independent UART2 port (GPIO" +
-            String(RS485_RX_PIN_DEFAULT) + "/" + String(RS485_TX_PIN_DEFAULT) + "/" +
-            String(RS485_DE_RE_PIN_DEFAULT) + ") and reboots.</p>";
-  } else {
-    body += "<p style=\"color:red\"><b>WARNING:</b> This switches RS485 onto UART0 (GPIO3 RX0 / "
-            "GPIO1 TX0), sharing it with the USB console. After this, the Serial menu becomes "
-            "permanently unavailable (there is no way to tell keystrokes apart from RS485 "
-            "traffic) - all further configuration must be done from this Web Config page. "
-            "Packet-level Serial debug logging is also disabled in this mode. The device "
-            "reboots immediately after confirming.</p>";
-  }
-  body += "<form method=\"POST\" action=\"/rs485/uart0\"><button type=\"submit\">Confirm"
-          "</button></form>";
-
-  sendPage("RS485 Settings", body);
-}
-
-void WebConfigServer::handleRs485Uart0Post() {
-  bool enabling = !_routing.get().rs485Uart0Shared;
-  sendPage("RS485 Settings", enabling
-                                  ? "<p>Switching to UART0 Shared Mode. Rebooting - reconnect to "
-                                    "this AP and reload /rs485 to verify.</p>"
-                                  : "<p>Switching back to UART2. Rebooting...</p>");
-  setRs485Uart0SharedMode(_routing, _storage, _rs485, enabling);
 }
 
 // ---------------------------------------------------------------------------
@@ -424,8 +365,7 @@ void WebConfigServer::handleRs485Uart0Post() {
 // ---------------------------------------------------------------------------
 
 void WebConfigServer::handleRoutingGet() {
-  static const char* kProtocolNames[] = {"IP_VISCA_RAW_UDP", "IP_VISCA_RAW_TCP", "SONY_VISCA_UDP",
-                                          "RAW_DATA_UDP"};
+  static const char* kProtocolNames[] = {"IP_VISCA_RAW_UDP", "IP_VISCA_RAW_TCP", "SONY_VISCA_UDP"};
   static const char* kAddrModeNames[] = {"rewrite_0x81", "preserve", "rewrite_by_cam"};
 
   String body = "<table><tr><th>CAM</th><th>VISCA Addr</th><th>IP</th><th>Port</th>"
@@ -465,7 +405,6 @@ void WebConfigServer::handleRoutingCamGet() {
   body += selectOption(0, (int)slot->protocol, "IP_VISCA_RAW_UDP");
   body += selectOption(1, (int)slot->protocol, "IP_VISCA_RAW_TCP");
   body += selectOption(2, (int)slot->protocol, "SONY_VISCA_UDP");
-  body += selectOption(3, (int)slot->protocol, "RAW_DATA_UDP (Raw Bridge peer)");
   body += "</select></label>";
 
   body += "<label>Address Mode: <select name=\"address_mode\">";
@@ -507,7 +446,12 @@ void WebConfigServer::handleRoutingCamPost() {
     slot->port = (uint16_t)port;
   }
 
-  slot->protocol = (ProtocolMode)_server.arg("protocol").toInt();
+  // 삭제된 RAW_DATA_UDP(3)가 POST로 다시 들어오지 않도록 범위를 확인한다
+  // (handleRs485Post()의 input_protocol과 같은 이유).
+  int protocol = _server.arg("protocol").toInt();
+  if (protocol >= 0 && protocol <= (int)ProtocolMode::SONY_VISCA_UDP) {
+    slot->protocol = (ProtocolMode)protocol;
+  }
   slot->addressMode = (AddressMode)_server.arg("address_mode").toInt();
   // 체크박스는 체크됐을 때만 폼에 포함된다 - hasArg()로 존재 여부만 본다.
   slot->autoPowerControl = _server.hasArg("auto_power_control");
@@ -548,22 +492,12 @@ void WebConfigServer::handleDebugGet() {
   SystemConfig& cfg = _routing.get();
   String body = "<p>Current Debug Mode: <b>" + String(cfg.debugMode ? "ON" : "OFF") + "</b></p>";
 
-  if (cfg.rs485Uart0Shared) {
-    body += "<p style=\"color:#b8860b\">Debug ON is unavailable while RS485 UART0 Shared Mode is "
-            "on - Serial IS the RS485 line in this mode, so packet-level Serial logging is "
-            "disabled to avoid interfering with it. Last Packets/Live/Raw Monitor below still "
-            "work (they read the in-memory log, not Serial).</p>";
-    body += "<form method=\"POST\" action=\"/debug/toggle\" style=\"display:inline\">"
-            "<input type=\"hidden\" name=\"to\" value=\"off\">"
-            "<button type=\"submit\">Debug OFF</button></form>";
-  } else {
-    body += "<form method=\"POST\" action=\"/debug/toggle\" style=\"display:inline\">"
-            "<input type=\"hidden\" name=\"to\" value=\"on\">"
-            "<button type=\"submit\">Debug ON</button></form> ";
-    body += "<form method=\"POST\" action=\"/debug/toggle\" style=\"display:inline\">"
-            "<input type=\"hidden\" name=\"to\" value=\"off\">"
-            "<button type=\"submit\">Debug OFF</button></form>";
-  }
+  body += "<form method=\"POST\" action=\"/debug/toggle\" style=\"display:inline\">"
+          "<input type=\"hidden\" name=\"to\" value=\"on\">"
+          "<button type=\"submit\">Debug ON</button></form> ";
+  body += "<form method=\"POST\" action=\"/debug/toggle\" style=\"display:inline\">"
+          "<input type=\"hidden\" name=\"to\" value=\"off\">"
+          "<button type=\"submit\">Debug OFF</button></form>";
 
   body += "<h3>Last Packets</h3><pre>";
   bool any = false;
@@ -606,15 +540,7 @@ void WebConfigServer::handleDebugGet() {
 
 void WebConfigServer::handleDebugTogglePost() {
   SystemConfig& cfg = _routing.get();
-  bool wantsOn = (_server.arg("to") == "on");
-  // UART0 Shared Mode에서는 Debug ON을 거부한다 - Serial이 곧 RS485 라인이라, 디버그
-  // 프린트가 writePacket()의 DE HIGH 구간과 타이밍이 겹치면 콘솔 텍스트 일부가 RS485
-  // 버스로 새 나갈 위험이 있다 (GatewayActions::setRs485Uart0SharedMode() 참고).
-  if (wantsOn && cfg.rs485Uart0Shared) {
-    redirectTo("/debug");
-    return;
-  }
-  cfg.debugMode = wantsOn;
+  cfg.debugMode = (_server.arg("to") == "on");
   _storage.save(cfg);
   redirectTo("/debug");
 }

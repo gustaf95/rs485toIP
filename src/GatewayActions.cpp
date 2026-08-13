@@ -8,7 +8,7 @@ void performFactoryReset(RoutingTable& routing, Storage& storage, Rs485Port& rs4
   SystemConfig& cfg = routing.get();
   storage.save(cfg);
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
-              cfg.rs485Uart0Shared, cfg.rs485Invert);
+              cfg.rs485Invert);
   statusLed.begin(cfg.statusLedPin);
 
   Serial.flush();
@@ -45,25 +45,4 @@ void buildPelcoPTestCommand(uint8_t out[8]) {
 
 void applyApSettings(const SystemConfig& cfg) {
   WiFi.softAP(cfg.wifi.apSsid, cfg.wifi.apPassword);
-}
-
-void setRs485Uart0SharedMode(RoutingTable& routing, Storage& storage, Rs485Port& rs485,
-                              bool enabled) {
-  SystemConfig& cfg = routing.get();
-  cfg.rs485Uart0Shared = enabled;
-  if (enabled) {
-    cfg.rs485RxPin = RS485_UART0_SHARED_RX_PIN;
-    cfg.rs485TxPin = RS485_UART0_SHARED_TX_PIN;
-    cfg.rs485DeRePin = RS485_UART0_SHARED_DE_RE_PIN;
-    cfg.debugMode = false;
-  } else {
-    cfg.rs485RxPin = RS485_RX_PIN_DEFAULT;
-    cfg.rs485TxPin = RS485_TX_PIN_DEFAULT;
-    cfg.rs485DeRePin = RS485_DE_RE_PIN_DEFAULT;
-  }
-  storage.save(cfg);
-
-  Serial.flush();
-  delay(300);
-  ESP.restart();
 }

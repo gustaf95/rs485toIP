@@ -4,15 +4,19 @@
 #include <IPAddress.h>
 #include "config.h"
 
-// RAW_DATA_UDP는 sendToCamera()의 일반 VISCA 라우팅 경로로는 쓰이지 않는다 -
-// InputProtocol::RAW_BRIDGE 모드에서 카메라 슬롯 하나를 "브릿지 피어"로 지정하는
-// 용도로만 쓰이며, main.cpp의 findRawBridgePeer()가 이 값으로 슬롯을 찾는다.
 enum class ProtocolMode : uint8_t {
   IP_VISCA_RAW_UDP = 0,
   IP_VISCA_RAW_TCP = 1,
-  SONY_VISCA_UDP = 2,
-  RAW_DATA_UDP = 3
+  SONY_VISCA_UDP = 2
+  // 3 = RAW_DATA_UDP (삭제된 Raw Bridge 모드의 피어 슬롯 표시값). **이 값을 재사용하지
+  // 않는다** - flash에 남아 있을 수 있어서, 새 프로토콜에 3을 주면 옛 설정이 그 프로토콜로
+  // 되살아난다. 로드 시 RoutingTable::sanitizeRemovedFeatures()가 기본값으로 되돌린다.
 };
+
+// 삭제된 기능이 flash에 남겨둘 수 있는 값들. 구조체 레이아웃은 그대로 두고(설정이
+// 초기화되지 않도록) 값만 걸러내기 위해 필요하다 - sanitizeRemovedFeatures() 참고.
+constexpr uint8_t kRemovedProtocolRawDataUdp = 3;
+constexpr uint8_t kRemovedInputProtocolRawBridge = 4;
 
 enum class AddressMode : uint8_t {
   REWRITE_0x81 = 0,
@@ -38,20 +42,12 @@ enum class ResponseMode : uint8_t {
 // VISCA는 종료 바이트 0xFF가 Pelco-D의 시작 바이트와 겹쳐 안전하게 자동
 // 판별할 수 없으므로(같은 문서 참고) 이 옵션에 포함하지 않는다 - VISCA는
 // 항상 명시적으로 선택해야 한다.
-//
-// RAW_BRIDGE는 VISCA/Pelco-D/Pelco-P 파싱을 전혀 하지 않는다 - RS485에 흐르는
-// 바이트를 그대로 묶어서 카메라 슬롯 하나(Protocol=RAW_DATA_UDP로 지정된 슬롯)의
-// IP:Port로 UDP 전송하고, 그 슬롯에서 받은 UDP 페이로드는 그대로 RS485 TX로
-// 내보낸다. 이 firmware를 올린 게이트웨이 두 대를 마주 보게 설정하면(서로의 IP를
-// 상대방 슬롯에 적어 넣으면) RS485 버스 하나를 IP망 너머로 그대로 연장하는
-// 투명 브릿지가 된다. 두 대 다 카메라가 아니라 컨트롤러/카메라를 직접 상대하므로
-// 프로토콜을 몰라도(심지어 VISCA/Pelco도 아닌 다른 RS485 프로토콜이어도) 동작한다.
 enum class InputProtocol : uint8_t {
   VISCA = 0,
   PELCO_D = 1,
   PELCO_P = 2,
-  PELCO_AUTO = 3,
-  RAW_BRIDGE = 4
+  PELCO_AUTO = 3
+  // 4 = RAW_BRIDGE (삭제됨). 위 ProtocolMode와 같은 이유로 재사용하지 않는다.
 };
 
 // Pelco-D/Pelco-P 입력을 받았을 때 RS485로 General Response(ACK)를 돌려줄지
@@ -130,10 +126,10 @@ struct SystemConfig {
   // 결선을 손댈 수 없는 현장에서는 이 옵션이 유일한 해법이라 설정으로 노출한다.
   // 기본값은 RS485_INVERT_DEFAULT(false, 정상 결선 가정).
   bool rs485Invert;
-  // true면 RS485가 UART0(Serial)를 공유한다 - RX/TX/DE-RE가 config.h의
-  // RS485_UART0_SHARED_* 값으로 고정되고, Serial 메뉴와 Serial 기반 디버그 로깅이
-  // 비활성화된다 (SerialMenu::poll(), main.cpp의 debugMode 게이팅 참고). 이 모드에서는
-  // Web Config Server가 유일한 설정 UI다.
+  // **사용하지 않는다.** 삭제된 UART0 Shared Mode(RS485가 USB 콘솔과 UART0를 공유하던
+  // 모드)가 쓰던 필드다. 구조체에서 빼면 크기가 바뀌어 Storage::load()가 실패하고 저장된
+  // 설정이 전부 초기화되므로(readme.md 4.2절과 같은 이유) 자리만 남겨둔다. 예전 펌웨어가
+  // true로 저장해둔 값은 sanitizeRemovedFeatures()가 false로 되돌린다.
   bool rs485Uart0Shared;
   uint8_t statusLedPin;
   InputProtocol inputProtocol;
@@ -157,6 +153,14 @@ struct RoutedPacket {
 class RoutingTable {
  public:
   void applyDefaults();
+
+  // 삭제된 기능(Raw Bridge / UART0 Shared Mode)의 값이 flash에서 로드된 설정에 남아
+  // 있으면 안전한 기본값으로 되돌린다. 하나라도 고쳤으면 true를 반환하므로, 호출부가
+  // 그때만 flash에 다시 저장하면 된다 (main.cpp setup() 참고).
+  //
+  // 구조체 레이아웃을 그대로 둔 채 기능만 걷어냈기 때문에 필요하다 - 설정을 초기화하지
+  // 않는 대신, 더 이상 해석할 수 없는 값이 그대로 살아 있을 수 있다.
+  bool sanitizeRemovedFeatures();
 
   SystemConfig& get() { return _config; }
   const SystemConfig& get() const { return _config; }

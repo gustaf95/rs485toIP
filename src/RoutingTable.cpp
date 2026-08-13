@@ -20,6 +20,7 @@ void RoutingTable::applyDefaults() {
   _config.rs485TxPin = RS485_TX_PIN_DEFAULT;
   _config.rs485DeRePin = RS485_DE_RE_PIN_DEFAULT;
   _config.rs485Invert = RS485_INVERT_DEFAULT;
+  // 삭제된 UART0 Shared Mode의 잔여 필드 - 자리만 유지한다 (RoutingTable.h 주석 참고).
   _config.rs485Uart0Shared = false;
   _config.statusLedPin = STATUS_LED_PIN_DEFAULT;
   _config.inputProtocol = InputProtocol::PELCO_D;
@@ -41,6 +42,41 @@ void RoutingTable::applyDefaults() {
     slot.addressMode = AddressMode::PRESERVE;
     slot.autoPowerControl = false;
   }
+}
+
+bool RoutingTable::sanitizeRemovedFeatures() {
+  bool changed = false;
+
+  // Raw Bridge로 설정돼 있던 게이트웨이는 이제 그 입력을 해석할 방법이 없다. 기본값인
+  // Pelco-D로 되돌린다 - 조용히 VISCA로 두면 어느 쪽으로도 파싱이 안 되는 상태가 된다.
+  if ((uint8_t)_config.inputProtocol == kRemovedInputProtocolRawBridge) {
+    _config.inputProtocol = InputProtocol::PELCO_D;
+    changed = true;
+  }
+
+  // 브릿지 피어로 쓰이던 슬롯. IP는 상대 게이트웨이 주소라 그대로 두면 그쪽으로 VISCA를
+  // 쏘게 되므로, 프로토콜만 되돌리지 말고 슬롯을 비활성(IP 비움)으로 만든다.
+  for (uint8_t i = 0; i < CAMERA_SLOT_COUNT; i++) {
+    CameraSlot& slot = _config.cameras[i];
+    if ((uint8_t)slot.protocol == kRemovedProtocolRawDataUdp) {
+      slot.protocol = ProtocolMode::IP_VISCA_RAW_UDP;
+      slot.ip = {{0, 0, 0, 0}};
+      changed = true;
+    }
+  }
+
+  // UART0 Shared Mode였던 보드는 RX/TX가 GPIO3/GPIO1(UART0)로 고정돼 있다. 플래그만
+  // 내리면 그 핀 설정이 남아 UART2를 UART0 핀으로 여는 셈이 되므로 핀도 같이 되돌린다
+  // (애초에 그 핀들은 validateRs485Pin()이 거부하는 값이라 메뉴로도 고칠 수 없다).
+  if (_config.rs485Uart0Shared) {
+    _config.rs485Uart0Shared = false;
+    _config.rs485RxPin = RS485_RX_PIN_DEFAULT;
+    _config.rs485TxPin = RS485_TX_PIN_DEFAULT;
+    _config.rs485DeRePin = RS485_DE_RE_PIN_DEFAULT;
+    changed = true;
+  }
+
+  return changed;
 }
 
 CameraSlot* RoutingTable::camera(uint8_t camNumber) {
