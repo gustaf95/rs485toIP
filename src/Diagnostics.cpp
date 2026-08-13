@@ -65,6 +65,14 @@ void Diagnostics::recordRs485TxResponse() {
   _rs485TxResponse++;
 }
 
+void Diagnostics::recordWebTx() {
+  _webTx++;
+}
+
+void Diagnostics::recordWebTxDropped() {
+  _webTxDropped++;
+}
+
 void Diagnostics::recordMalformed() {
   _malformedPacket++;
 }
@@ -119,6 +127,8 @@ void Diagnostics::resetCounters() {
   _ipTxSuccess = 0;
   _ipTxFailed = 0;
   _rs485TxResponse = 0;
+  _webTx = 0;
+  _webTxDropped = 0;
   _malformedPacket = 0;
   _bufferOverflow = 0;
   _packetTimeout = 0;

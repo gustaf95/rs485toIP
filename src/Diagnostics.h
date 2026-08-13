@@ -20,6 +20,11 @@ class Diagnostics {
   void recordIpTxSuccess();
   void recordIpTxFailed();
   void recordRs485TxResponse();
+  // 웹 컨트롤러가 RS485 버스로 내보낸 마스터 프레임 / 유휴 창을 못 잡아 버린 프레임.
+  // rs485TxResponse(응답)와 분리한다 - 이쪽은 게이트웨이가 먼저 말을 거는 트래픽이라
+  // 버스 중재가 잘 되고 있는지 판단하는 지표가 된다 (doc/Web_controller.md).
+  void recordWebTx();
+  void recordWebTxDropped();
   void recordMalformed();
   void recordOverflow();
   void recordTimeout();
@@ -34,6 +39,8 @@ class Diagnostics {
   uint32_t ipTxSuccess() const { return _ipTxSuccess; }
   uint32_t ipTxFailed() const { return _ipTxFailed; }
   uint32_t rs485TxResponse() const { return _rs485TxResponse; }
+  uint32_t webTx() const { return _webTx; }
+  uint32_t webTxDropped() const { return _webTxDropped; }
   uint32_t malformedPacket() const { return _malformedPacket; }
   uint32_t bufferOverflow() const { return _bufferOverflow; }
   uint32_t packetTimeout() const { return _packetTimeout; }
@@ -74,6 +81,8 @@ class Diagnostics {
   uint32_t _ipTxSuccess = 0;
   uint32_t _ipTxFailed = 0;
   uint32_t _rs485TxResponse = 0;
+  uint32_t _webTx = 0;
+  uint32_t _webTxDropped = 0;
   uint32_t _malformedPacket = 0;
   uint32_t _bufferOverflow = 0;
   uint32_t _packetTimeout = 0;

@@ -68,6 +68,9 @@ void WebConfigServer::begin() {
   _server.on("/debug/test-command", HTTP_POST, [this]() { handleDebugTestCommandPost(); });
   _server.on("/factory-reset", HTTP_GET, [this]() { handleFactoryResetGet(); });
   _server.on("/factory-reset", HTTP_POST, [this]() { handleFactoryResetPost(); });
+  // 제어 패널(/control, /api/*)은 같은 서버에 얹는다.
+  _control.registerRoutes(_server);
+
   _server.onNotFound([this]() { handleNotFound(); });
 
   _server.begin();
@@ -97,7 +100,8 @@ void WebConfigServer::sendPage(const String& title, const String& bodyHtml, uint
   html += "button,input[type=submit]{padding:6px 12px;margin-top:0.5em}";
   html += "pre{background:#f4f4f4;padding:0.6em;overflow-x:auto}";
   html += "</style></head><body>";
-  html += "<nav><a href=\"/\">Status</a><a href=\"/network\">Network</a><a href=\"/rs485\">RS485</a>"
+  html += "<nav><a href=\"/\">Status</a><a href=\"/control\"><b>Control</b></a>"
+          "<a href=\"/network\">Network</a><a href=\"/rs485\">RS485</a>"
           "<a href=\"/routing\">Routing</a><a href=\"/counters\">Counters</a><a href=\"/debug\">Debug</a>"
           "<a href=\"/factory-reset\">Factory Reset</a></nav><hr>";
   html += "<h2>" + htmlEscape(title) + "</h2>";
@@ -474,6 +478,8 @@ void WebConfigServer::handleCountersGet() {
   body += "<tr><td>IP TX Success</td><td>" + String(_diagnostics.ipTxSuccess()) + "</td></tr>";
   body += "<tr><td>IP TX Failed</td><td>" + String(_diagnostics.ipTxFailed()) + "</td></tr>";
   body += "<tr><td>RS485 TX Response</td><td>" + String(_diagnostics.rs485TxResponse()) + "</td></tr>";
+  body += "<tr><td>Web RS485 TX</td><td>" + String(_diagnostics.webTx()) + "</td></tr>";
+  body += "<tr><td>Web RS485 TX Dropped</td><td>" + String(_diagnostics.webTxDropped()) + "</td></tr>";
   body += "<tr><td>Malformed Packet</td><td>" + String(_diagnostics.malformedPacket()) + "</td></tr>";
   body += "<tr><td>Buffer Overflow</td><td>" + String(_diagnostics.bufferOverflow()) + "</td></tr>";
   body += "<tr><td>Packet Timeout</td><td>" + String(_diagnostics.packetTimeout()) + "</td></tr>";

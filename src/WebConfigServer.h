@@ -7,6 +7,7 @@
 #include "Diagnostics.h"
 #include "Rs485Port.h"
 #include "StatusLed.h"
+#include "WebControl.h"
 
 // USB Serial(SerialMenu)의 웹 버전. USB를 물리적으로 꽂을 수 없는 이미 설치된
 // 장비나, UART0가 RS485와 충돌해서 Serial 메뉴를 쓸 수 없는 보드를 위한 두 번째
@@ -20,15 +21,19 @@ class WebConfigServer {
  public:
   using WifiRetryFn = void (*)();
 
+  // control은 같은 WebServer에 제어 패널(/control, /api/*) 라우트를 얹는다 - 포트를
+  // 따로 열지 않으므로 사용자는 주소 하나만 기억하면 된다 (WebControl.h 참고).
   WebConfigServer(RoutingTable& routing, Storage& storage, Diagnostics& diagnostics,
-                   Rs485Port& rs485, StatusLed& statusLed, WifiRetryFn wifiRetry)
+                   Rs485Port& rs485, StatusLed& statusLed, WifiRetryFn wifiRetry,
+                   WebControl& control)
       : _server(WEB_SERVER_PORT),
         _routing(routing),
         _storage(storage),
         _diagnostics(diagnostics),
         _rs485(rs485),
         _statusLed(statusLed),
-        _wifiRetry(wifiRetry) {}
+        _wifiRetry(wifiRetry),
+        _control(control) {}
 
   // AP를 띄우고 라우트를 등록한 뒤 서버를 시작한다. setup()에서 한 번 호출.
   void begin();
@@ -44,6 +49,7 @@ class WebConfigServer {
   Rs485Port& _rs485;
   StatusLed& _statusLed;
   WifiRetryFn _wifiRetry;
+  WebControl& _control;
 
   // ---- 페이지 핸들러 ----
   void handleStatus();

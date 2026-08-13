@@ -13,6 +13,7 @@
 #include "SonyViscaClient.h"
 #include "SerialMenu.h"
 #include "WebConfigServer.h"
+#include "WebControl.h"
 #include "StatusLed.h"
 
 void connectWifi();
@@ -28,7 +29,8 @@ IpViscaClient ipViscaClient;
 SonyViscaClient sonyViscaClient;
 StatusLed statusLed;
 SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, statusLed, connectWifi);
-WebConfigServer webConfigServer(routingTable, storage, diagnostics, rs485, statusLed, connectWifi);
+// webControl/webConfigServer는 파일 아래쪽(웹 명령 실행 함수들이 정의된 뒤)에서 만든다 -
+// 생성자에 그 함수들의 포인터를 넘겨야 하기 때문이다. setup()/loop()에서만 쓰인다.
 
 bool wifiIsStation = false;
 unsigned long lastWifiRetryMs = 0;
@@ -53,7 +55,22 @@ struct CameraModeCache {
   uint8_t wbMode;     // VISCA CAM_WBMode:       0x00 Auto, 0x05 Manual, ...
   uint8_t focusMode;  // VISCA CAM_FocusAFMode:  0x02 Auto, 0x03 Manual, 0x04 One Push
   uint8_t backlight;  // VISCA CAM_Back Light:   0x02 On, 0x03 Off
+  // 각 항목을 **실제로 관측했는지** (MODE_KNOWN_* 비트).
+  //
+  // 위 초기값들이 그럴듯한 기본값이라 그냥 두면 구분이 안 된다 - 컨트롤러에게는 부팅
+  // 직후에도 뭔가 답해주는 게 맞지만(그래서 초기값이 있다), 웹 화면에서는 "한 번도 확인
+  // 못 한 값"을 사실처럼 보여주면 안 된다. 특히 RS485 카메라 상태는 컨트롤러가 폴링해
+  // 줘야만 알 수 있어서, 컨트롤러가 꺼져 있으면 영영 관측되지 않는다 - 그 경우 화면에
+  // `--`를 띄우는 게 정직하다.
+  uint8_t known;
+  unsigned long updatedMs;  // 마지막으로 값이 갱신된 시각 (웹 화면의 신선도 표시용)
 };
+#define MODE_KNOWN_POWER 0x01
+#define MODE_KNOWN_AE 0x02
+#define MODE_KNOWN_WB 0x04
+#define MODE_KNOWN_FOCUS 0x08
+#define MODE_KNOWN_BACKLIGHT 0x10
+
 // 초기값 = 전부 Auto (VISCA 코드로 AE Full Auto / WB Auto / Focus Auto).
 CameraModeCache modeCache[CAMERA_SLOT_COUNT] = {};
 void resetModeCache() {
@@ -64,7 +81,15 @@ void resetModeCache() {
     modeCache[i].focusMode = 0x02;  // Auto Focus
     // BLC만 Auto 계열 기본값이 없다. ED-P 매뉴얼의 공장 초기값이 OFF라 그쪽을 따른다.
     modeCache[i].backlight = 0x03;  // Back Light Off
+    modeCache[i].known = 0;
+    modeCache[i].updatedMs = 0;
   }
+}
+
+void markModeKnown(uint8_t camNumber, uint8_t bit) {
+  if (camNumber < 1 || camNumber > CAMERA_SLOT_COUNT) return;
+  modeCache[camNumber - 1].known |= bit;
+  modeCache[camNumber - 1].updatedMs = millis();
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +232,83 @@ void pollDiagRawLog() {
     diagRawLineBuf.toUpperCase();
     diagnostics.pushRawLog(diagRawLineBuf);
     diagRawLineOpen = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 웹 컨트롤러: RS485 마스터 송신 큐 (doc/Web_controller.md 2.1절)
+// ---------------------------------------------------------------------------
+// 게이트웨이가 자기 판단으로 버스에 프레임을 내보내는 유일한 경로다. 응답(D7)이나 합성
+// ACK와 달리 "질문에 답하는" 트래픽이 아니라 먼저 말을 거는 트래픽이라, 이미 마스터가
+// 있는 버스에 끼어드는 문제를 여기서 혼자 감당한다.
+//
+// 규칙은 하나뿐이다: **마지막 수신 바이트로부터 WEB_TX_BUS_IDLE_MS 이상 조용할 때만
+// 보낸다.** 게이트웨이는 자기 송신 중에 버스를 들을 수 없어서(DE/RE가 수신부를 끈다)
+// 충돌을 감지할 수단이 없으므로, 충돌을 사후에 처리하는 대신 애초에 피하는 쪽으로만
+// 설계할 수 있다.
+uint8_t webTxQueue[WEB_TX_QUEUE_DEPTH][PELCO_D_PACKET_LEN];
+unsigned long webTxQueuedMs[WEB_TX_QUEUE_DEPTH];
+uint8_t webTxHead = 0;
+uint8_t webTxCount = 0;
+// RS485에서 마지막으로 바이트를 읽은 시각. 유휴 판정의 유일한 근거다 (loop()가 갱신).
+unsigned long lastRs485ByteMs = 0;
+// 마지막으로 체크섬까지 통과한 프레임을 본 시각 - 웹 화면의 "물리 컨트롤러 활동 중"
+// 표시에 쓴다. 위 바이트 시각과 달리 노이즈에 반응하지 않는다.
+unsigned long lastBusFrameMs = 0;
+
+void webTxClear() {
+  webTxCount = 0;
+}
+
+// priority=true면 대기 중인 프레임을 전부 버리고 이 프레임만 남긴다. Stop 전용이다 -
+// 아직 안 나간 이동 명령들은 Stop이 뒤따르는 순간 의미가 없어지고, 순서대로 내보내려고
+// 기다리는 동안 정지가 늦어지는 게 훨씬 나쁘다.
+void webTxEnqueue(const uint8_t* frame, bool priority) {
+  if (priority) webTxClear();
+
+  if (webTxCount >= WEB_TX_QUEUE_DEPTH) {
+    // 큐가 가득 찼다 = 버스가 계속 바빠서 유휴 창을 못 잡고 있다는 뜻이다. 가장 오래된
+    // 것부터 버린다 - 조작자가 방금 누른 것이 대기열 맨 뒤에서 밀려나면 안 된다.
+    webTxHead = (webTxHead + 1) % WEB_TX_QUEUE_DEPTH;
+    webTxCount--;
+    diagnostics.recordWebTxDropped();
+  }
+
+  uint8_t slot = (webTxHead + webTxCount) % WEB_TX_QUEUE_DEPTH;
+  memcpy(webTxQueue[slot], frame, PELCO_D_PACKET_LEN);
+  webTxQueuedMs[slot] = millis();
+  webTxCount++;
+}
+
+void pollWebRs485Tx() {
+  if (webTxCount == 0) return;
+
+  unsigned long now = millis();
+
+  // 너무 오래 기다린 프레임은 버린다. 뒤늦게 나가는 이동 명령은 조작자가 이미 손을 뗀
+  // 뒤에 카메라를 움직이게 만든다.
+  while (webTxCount > 0 && (now - webTxQueuedMs[webTxHead]) > WEB_TX_MAX_WAIT_MS) {
+    webTxHead = (webTxHead + 1) % WEB_TX_QUEUE_DEPTH;
+    webTxCount--;
+    diagnostics.recordWebTxDropped();
+  }
+  if (webTxCount == 0) return;
+
+  if ((now - lastRs485ByteMs) < WEB_TX_BUS_IDLE_MS) return;  // 버스가 아직 바쁘다
+
+  // 한 번에 한 프레임만 내보내고 나간다. 다음 회전에서 유휴 여부를 다시 보게 되므로,
+  // 그 사이에 컨트롤러가 말을 시작했으면 나머지는 자동으로 미뤄진다.
+  uint8_t frame[PELCO_D_PACKET_LEN];
+  memcpy(frame, webTxQueue[webTxHead], PELCO_D_PACKET_LEN);
+  webTxHead = (webTxHead + 1) % WEB_TX_QUEUE_DEPTH;
+  webTxCount--;
+
+  rs485.writePacket(frame, PELCO_D_PACKET_LEN);
+  diagnostics.recordWebTx();
+
+  if (routingTable.get().debugMode) {
+    Serial.print("[WEB->RS485] ");
+    Serial.println(viscaBytesToHex(frame, PELCO_D_PACKET_LEN));
   }
 }
 
@@ -591,6 +693,12 @@ void updateModeCacheFromSet(uint8_t camNumber, uint8_t viscaCode, uint8_t value)
     // 예약하지 않는다: 물어볼 "설정한 값"이 애초에 없고, 컨트롤러도 그 값을 표시하지 않는다.
     default: return;
   }
+
+  // 낙관적 갱신도 "관측"으로 친다 - 방금 우리가 지나가는 걸 본 명령이라 근거가 있고,
+  // 틀렸다면 아래 확인 조회가 곧 바로잡는다. ModeInquiry 열거와 같은 순서다.
+  static const uint8_t kKnownBits[MODE_INQUIRY_ITEM_COUNT] = {
+      MODE_KNOWN_POWER, MODE_KNOWN_AE, MODE_KNOWN_WB, MODE_KNOWN_FOCUS, MODE_KNOWN_BACKLIGHT};
+  markModeKnown(camNumber, kKnownBits[item]);
 
   // 방금 설정한 항목을 곧바로 되물어 실제로 적용됐는지 확인한다.
   priorityInquiryCam = camNumber;
@@ -1052,6 +1160,107 @@ bool isOwnedSlot(const CameraSlot* slot) {
   return slot != nullptr && slot->isConfigured();
 }
 
+// ---------------------------------------------------------------------------
+// 버스 스니핑 (doc/Web_controller.md 5절)
+// ---------------------------------------------------------------------------
+// 웹 화면에 RS485 카메라(ED-P)의 현재 모드를 표시하려면 그 값을 알아야 하는데,
+// **게이트웨이가 직접 물어볼 수는 없다.** D7 응답에는 어느 질문의 답인지가 담겨 있지
+// 않아서 컨트롤러가 자기 질문 순서로 짝을 맞추는데, 우리가 조회를 하나 끼워 넣으면 그
+// 답을 컨트롤러가 자기 것으로 오해해 LCD에 엉뚱한 값을 띄운다.
+//
+// 물어볼 필요도 없다. 컨트롤러가 쉬지 않고 폴링하고 있고 게이트웨이는 그 질문과 답을
+// **둘 다 듣는 자리**에 있다. 컨트롤러와 똑같은 방식(질문 순서)으로 짝지으면 추가
+// 트래픽 0으로 같은 정보를 얻는다.
+//
+//   FF 03 00 D3 19 E6 D8      컨트롤러의 질문
+//   FF 03 55 D7 19 41 8C      ED-P의 답      -> 3번의 Iris/AWB/Focus
+//
+// 게이트웨이 담당 슬롯(IP 설정됨)에는 실물 카메라가 없으므로 이 경로로 들어오는 게
+// 없고, 그쪽 상태는 VISCA 조회(pollCameraModeInquiries)가 이미 채우고 있다.
+struct BusQuery {
+  uint8_t data1;
+  uint8_t data2;
+  bool pending;
+  unsigned long ms;
+};
+BusQuery busQuery[CAMERA_SLOT_COUNT] = {};
+
+// 버스에서 관측한 Pelco-D 프레임 하나를 상태 캐시에 반영한다. 응답 프레임이면 true를
+// 반환한다 - 호출부는 그걸로 "명령이 아니라 응답이니 번역 경로로 넘기지 말라"를 판단한다.
+bool sniffBusFrame(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, uint8_t data1,
+                    uint8_t data2) {
+  if (camNumber < 1 || camNumber > CAMERA_SLOT_COUNT) return false;
+  CameraModeCache& c = modeCache[camNumber - 1];
+  BusQuery& q = busQuery[camNumber - 1];
+
+  // 컨트롤러의 조회 - 무엇을 물었는지 기억해둔다. D3 04 응답은 항목을 안 담으므로
+  // 이 기억이 없으면 해석 자체가 불가능하다.
+  if (cmnd1 == 0x00 && cmnd2 == PELCO_EDIS_QUERY_CMD) {
+    q.data1 = data1;
+    q.data2 = data2;
+    q.pending = true;
+    q.ms = millis();
+    return false;
+  }
+
+  // 컨트롤러의 SET - 카메라 응답을 기다릴 것 없이 그 자리에서 반영한다(낙관적).
+  // 여기 pp는 **컨트롤러 방언**이다 - AWB는 VISCA의 0x35가 아니라 0x36으로 온다.
+  if (cmnd1 == 0x00 && cmnd2 == PELCO_EDIS_SET_CMD) {
+    switch (data1) {
+      case VISCA_CAM_POWER: c.power = data2; markModeKnown(camNumber, MODE_KNOWN_POWER); break;
+      case 0x39: c.aeMode = data2; markModeKnown(camNumber, MODE_KNOWN_AE); break;
+      case PELCO_EDIS_SET_WB_MODE: c.wbMode = data2; markModeKnown(camNumber, MODE_KNOWN_WB); break;
+      case VISCA_CAM_FOCUS_AF_MODE:
+        c.focusMode = data2;
+        markModeKnown(camNumber, MODE_KNOWN_FOCUS);
+        break;
+      case VISCA_CAM_BACKLIGHT:
+        c.backlight = data2;
+        markModeKnown(camNumber, MODE_KNOWN_BACKLIGHT);
+        break;
+      default: break;  // 상대 조정(Gain/Bright 등)은 담을 상태가 없다
+    }
+    return false;
+  }
+
+  if (cmnd2 != PELCO_EDIS_QUERY_RESPONSE) return false;
+
+  // ---- 여기부터는 카메라가 컨트롤러에게 보낸 응답이다 ----
+
+  // 모드 상태 응답: FF ADDR R1 D7 19 D2 CK. sendEdisModeStatus()가 만드는 것과 같은
+  // 규격을 반대로 읽는다 (doc/todo.md 부록).
+  if (data1 == PELCO_EDIS_QUERY_MODE_STATUS) {
+    c.wbMode = cmnd1 & 0x0F;  // R1 하위 니블이 VISCA WB 모드 코드
+    // Iris/Focus는 Manual 플래그 한 비트뿐이라, 되읽을 때도 Auto/Manual 두 값으로만
+    // 복원된다. 카메라가 실제로 세 번째 모드(One Push 등)에 있어도 여기서는 알 수 없다.
+    c.aeMode = (data2 & PELCO_EDIS_STATUS_IRIS_MANUAL) ? 0x03 : 0x00;
+    c.focusMode = (data2 & PELCO_EDIS_STATUS_FOCUS_MANUAL) ? 0x03 : 0x02;
+    markModeKnown(camNumber, MODE_KNOWN_WB | MODE_KNOWN_AE | MODE_KNOWN_FOCUS);
+    q.pending = false;
+    return true;
+  }
+
+  // 단일 항목 응답: FF ADDR 00 D7 00 <값> CK. 항목이 안 적혀 있으므로 직전 질문과
+  // 짝지어야만 의미가 생긴다 - 오래된 질문은 짝짓지 않는다(엉뚱한 값 표시 방지).
+  if (data1 == 0x00) {
+    if (!q.pending || (millis() - q.ms) > WEB_BUS_QUERY_PAIR_MS ||
+        q.data1 != PELCO_EDIS_QUERY_ITEM) {
+      return true;  // 응답인 건 맞으니 소비하되, 무엇의 답인지 모르므로 버린다
+    }
+    if (q.data2 == VISCA_CAM_POWER) {
+      c.power = data2;
+      markModeKnown(camNumber, MODE_KNOWN_POWER);
+    } else if (q.data2 == VISCA_CAM_BACKLIGHT) {
+      c.backlight = data2;
+      markModeKnown(camNumber, MODE_KNOWN_BACKLIGHT);
+    }
+    q.pending = false;
+    return true;
+  }
+
+  return true;  // 우리가 해독하지 못한 응답 - 명령이 아닌 것은 확실하다
+}
+
 // Pelco-D General Response(ACK)를 합성해서 돌려준다. 체크섬은 원본 명령의 체크섬
 // 바이트를 그대로 사용한다 (ALARMS=0x00이므로 sum(원본 CKSM, 0x00) = 원본 CKSM).
 void sendPelcoDResponse(const uint8_t* data, uint8_t len) {
@@ -1066,6 +1275,7 @@ void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
   recordAutoPowerChatterPacket();
 
   SystemConfig& cfg = routingTable.get();
+  lastBusFrameMs = millis();
   if (cfg.debugMode) {
     Serial.print("[PELCO-D RX] ");
     Serial.println(viscaBytesToHex(data, len));
@@ -1079,6 +1289,16 @@ void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
   if (slot == nullptr) {
     if (cfg.debugMode) {
       Serial.println("[ACTION] Address out of range (1-7) - ignored");
+    }
+    return;
+  }
+
+  // 웹 화면용 상태 수집. 번역 경로보다 **먼저** 태운다 - 이 프레임이 카메라의 응답이면
+  // 애초에 명령이 아니므로 번역을 시도해선 안 된다. 예전에는 응답의 CMND2(0xD7) bit0이
+  // 켜져 있다는 이유로 "Unknown extended command"로 분류돼 Unhandled 로그만 채웠다.
+  if (sniffBusFrame(camNumber, data[2], data[3], data[4], data[5])) {
+    if (cfg.debugMode) {
+      Serial.println("[SNIFF] Camera response absorbed into state cache");
     }
     return;
   }
@@ -1146,6 +1366,330 @@ bool isPelcoInput(const SystemConfig& cfg) {
   return cfg.inputProtocol == InputProtocol::PELCO_D ||
          cfg.inputProtocol == InputProtocol::PELCO_P ||
          cfg.inputProtocol == InputProtocol::PELCO_AUTO;
+}
+
+// ---------------------------------------------------------------------------
+// 웹 컨트롤러: 명령 실행 (doc/Web_controller.md 3절)
+// ---------------------------------------------------------------------------
+// 웹에서 누른 키 하나가 여기로 들어와 대상에 맞는 경로로 나간다.
+//
+//   IP가 설정된 슬롯  -> VISCA over IP. 전용 소켓이라 아무와도 안 부딪힌다.
+//   IP가 없는 슬롯    -> RS485 Pelco-D 마스터 프레임. 유휴 창을 기다렸다 나간다.
+//
+// **웹 전용 VISCA 생성기를 따로 만들지 않는다** - 기존 번역 경로가 쓰는
+// forwardTranslatedVisca()/updateModeCacheFromSet()를 그대로 태운다. 그래야 중복 억제,
+// 모드 캐시 갱신, 확인 조회 예약, One Push AF 되돌리기가 웹 경로에서만 조용히 빠지는
+// 일이 없다.
+
+// 이동/줌/포커스는 Stop이 올 때까지 유지되는 래치 명령이라, 브라우저가 갱신을 멈추면
+// 게이트웨이가 대신 멈춰줘야 한다 (config.h WEB_HOLD_TIMEOUT_MS).
+unsigned long webHoldUntilMs[CAMERA_SLOT_COUNT] = {};
+
+void webBuildPelcoFrame(uint8_t cam, uint8_t c1, uint8_t c2, uint8_t d1, uint8_t d2,
+                         uint8_t* out) {
+  out[0] = PELCO_D_START_BYTE;
+  out[1] = cam;
+  out[2] = c1;
+  out[3] = c2;
+  out[4] = d1;
+  out[5] = d2;
+  uint8_t sum = 0;
+  for (uint8_t i = 1; i < PELCO_D_PACKET_LEN - 1; i++) sum += out[i];
+  out[PELCO_D_PACKET_LEN - 1] = sum;
+}
+
+bool webSendPelco(uint8_t cam, uint8_t c1, uint8_t c2, uint8_t d1, uint8_t d2, bool priority,
+                   String* err) {
+  // 이 함수는 **Pelco-D 프레임만** 만든다. Pelco-P는 프레이밍(0xA0~0xAF, XOR 체크섬)도
+  // 주소 규칙(wire에 실리는 값이 실제 주소 - 1)도 달라서 그대로 내보내면 버스의 장비가
+  // 프레임을 잃는다 - 실측 없이 만들지 않는다(doc/todo.md 3.2절과 같은 이유).
+  // Autodetect는 Pelco-D도 흐르는 버스라는 뜻이므로 허용한다.
+  InputProtocol input = routingTable.get().inputProtocol;
+  if (input != InputProtocol::PELCO_D && input != InputProtocol::PELCO_AUTO) {
+    if (err) *err = "RS485 control needs Pelco-D input (Pelco-P master frames not implemented)";
+    return false;
+  }
+  uint8_t frame[PELCO_D_PACKET_LEN];
+  webBuildPelcoFrame(cam, c1, c2, d1, d2, frame);
+  webTxEnqueue(frame, priority);
+  return true;
+}
+
+// 모드 SET 하나를 경로에 맞는 방언으로 내보낸다. VISCA 코드와 버스 코드를 따로 받는
+// 이유는 둘이 어긋나는 경우가 있기 때문이다 - AWB는 버스에서 0x36, VISCA에서 0x35다.
+bool webSetMode(uint8_t cam, bool viaIp, uint8_t viscaCode, uint8_t busCode, uint8_t value,
+                 String* err) {
+  if (viaIp) {
+    uint8_t buf[6] = {0, 0x01, 0x04, viscaCode, value, VISCA_TERMINATOR};
+    forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB");
+    updateModeCacheFromSet(cam, viscaCode, value);
+    return true;
+  }
+  if (!webSendPelco(cam, 0x00, PELCO_EDIS_SET_CMD, busCode, value, /*priority=*/false, err)) {
+    return false;
+  }
+  // 컨트롤러가 보낸 SET을 엿들었을 때와 똑같이 캐시를 낙관적으로 갱신한다 - 실제 값은
+  // 컨트롤러의 다음 폴링을 스니핑해서 따라잡는다.
+  sniffBusFrame(cam, 0x00, PELCO_EDIS_SET_CMD, busCode, value);
+  return true;
+}
+
+// 상대 조정(Up/Down). 담을 상태가 없어 캐시를 건드리지 않고, IP 경로에서는 중복 억제도
+// 건너뛴다 - 같은 바이트의 반복이 곧 "한 칸 더"라서 억제하면 눌러도 안 움직인다.
+bool webSendStep(uint8_t cam, bool viaIp, uint8_t code, bool up, String* err) {
+  uint8_t value = up ? 0x02 : 0x03;
+  if (viaIp) {
+    uint8_t buf[6] = {0, 0x01, 0x04, code, value, VISCA_TERMINATOR};
+    forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB", /*isRelativeStep=*/true);
+    return true;
+  }
+  return webSendPelco(cam, 0x00, PELCO_EDIS_SET_CMD, code, value, /*priority=*/false, err);
+}
+
+bool webStop(uint8_t cam, bool viaIp, String* err) {
+  webHoldUntilMs[cam - 1] = 0;
+  if (viaIp) {
+    // Pelco Stop과 같은 의미가 되도록 Pan/Tilt·Zoom·Focus를 한꺼번에 멈춘다.
+    uint8_t stopPT[9] = {0, 0x01, 0x06, 0x01, 0x01, 0x01, 0x03, 0x03, VISCA_TERMINATOR};
+    uint8_t stopZoom[6] = {0, 0x01, 0x04, 0x07, 0x00, VISCA_TERMINATOR};
+    uint8_t stopFocus[6] = {0, 0x01, 0x04, 0x08, 0x00, VISCA_TERMINATOR};
+    forwardTranslatedVisca(cam, stopPT, sizeof(stopPT), "WEB");
+    forwardTranslatedVisca(cam, stopZoom, sizeof(stopZoom), "WEB");
+    forwardTranslatedVisca(cam, stopFocus, sizeof(stopFocus), "WEB");
+    return true;
+  }
+  return webSendPelco(cam, 0x00, 0x00, 0x00, 0x00, /*priority=*/true, err);
+}
+
+// action은 웹 레이어가 그대로 넘겨준 문자열이다. 성공하면 true, 실패하면 err에 이유를
+// 담고 false.
+bool webExecuteCommand(uint8_t cam, const String& action, int p1, int p2, String* err) {
+  if (cam < 1 || cam > CAMERA_SLOT_COUNT) {
+    if (err) *err = "camera out of range";
+    return false;
+  }
+  CameraSlot* slot = routingTable.camera(cam);
+  bool viaIp = isOwnedSlot(slot);
+
+  // 웹 조작도 "컨트롤러가 활동 중"으로 친다. Auto Power Control은 RS485 버스의 재잘거림만
+  // 보고 전원을 내리는데, 웹으로만 조작하면 버스는 조용해서 조작 도중에 카메라가 스탠바이로
+  // 내려간다.
+  recordAutoPowerChatterPacket();
+
+  bool hold = false;
+  bool ok = false;
+
+  if (action == "stop") {
+    ok = webStop(cam, viaIp, err);
+  } else if (action == "move") {
+    int pan = constrain(p1, -63, 63);
+    int tilt = constrain(p2, -63, 63);
+    if (pan == 0 && tilt == 0) return webStop(cam, viaIp, err);
+    hold = true;
+    if (viaIp) {
+      uint8_t vv = scalePelcoSpeedToVisca((uint8_t)abs(pan), 0x18);
+      uint8_t ww = scalePelcoSpeedToVisca((uint8_t)abs(tilt), 0x14);
+      uint8_t p3 = (pan == 0) ? 0x03 : (pan < 0 ? 0x01 : 0x02);
+      uint8_t p4 = (tilt == 0) ? 0x03 : (tilt > 0 ? 0x01 : 0x02);
+      uint8_t buf[9] = {0, 0x01, 0x06, 0x01, vv, ww, p3, p4, VISCA_TERMINATOR};
+      forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB");
+      ok = true;
+    } else {
+      uint8_t bits = 0;
+      if (pan < 0) bits |= 0x04;
+      if (pan > 0) bits |= 0x02;
+      if (tilt > 0) bits |= 0x08;
+      if (tilt < 0) bits |= 0x10;
+      ok = webSendPelco(cam, 0x00, bits, (uint8_t)abs(pan), (uint8_t)abs(tilt), false, err);
+    }
+  } else if (action == "zoom") {
+    if (p1 == 0) return webStop(cam, viaIp, err);
+    hold = true;
+    if (viaIp) {
+      // p2가 0~7이면 가변속(`04 07 2p`/`3p`), 아니면 실측으로 확인된 고정속을 쓴다.
+      uint8_t value;
+      if (p2 >= 0 && p2 <= 7) value = (uint8_t)((p1 > 0 ? 0x20 : 0x30) | p2);
+      else value = (uint8_t)(p1 > 0 ? 0x02 : 0x03);
+      uint8_t buf[6] = {0, 0x01, 0x04, 0x07, value, VISCA_TERMINATOR};
+      forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB");
+      ok = true;
+    } else {
+      // Pelco-D 줌에는 속도 필드가 없다 - 카메라가 정한 속도로만 움직인다.
+      ok = webSendPelco(cam, 0x00, (uint8_t)(p1 > 0 ? 0x20 : 0x40), 0x00, 0x00, false, err);
+    }
+  } else if (action == "focus") {
+    if (p1 == 0) return webStop(cam, viaIp, err);
+    hold = true;
+    if (viaIp) {
+      uint8_t buf[6] = {0, 0x01, 0x04, 0x08, (uint8_t)(p1 > 0 ? 0x02 : 0x03), VISCA_TERMINATOR};
+      forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB");
+      ok = true;
+    } else {
+      // Far는 CMND2 bit7, Near는 CMND1 bit0 - 두 바이트로 갈려 있다 (Pelco-D 비트 배치).
+      ok = p1 > 0 ? webSendPelco(cam, 0x00, 0x80, 0x00, 0x00, false, err)
+                  : webSendPelco(cam, 0x01, 0x00, 0x00, 0x00, false, err);
+    }
+  } else if (action == "iris") {
+    // 한 번에 한 칸씩 움직이는 계단식이라 Stop이 없다. AE가 Manual일 때만 효과가 있다.
+    if (viaIp) {
+      uint8_t buf[6] = {0, 0x01, 0x04, 0x0B, (uint8_t)(p1 > 0 ? 0x02 : 0x03), VISCA_TERMINATOR};
+      forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB", /*isRelativeStep=*/true);
+      ok = true;
+    } else {
+      ok = webSendPelco(cam, (uint8_t)(p1 > 0 ? 0x02 : 0x04), 0x00, 0x00, 0x00, false, err);
+    }
+  } else if (action == "preset_goto" || action == "preset_set" || action == "preset_clear") {
+    if (p1 < 1 || p1 > 255) {
+      if (err) *err = "preset out of range (1-255)";
+      return false;
+    }
+    if (viaIp) {
+      uint8_t opcode = (action == "preset_set") ? 0x01 : (action == "preset_goto") ? 0x02 : 0x00;
+      uint8_t buf[7] = {0, 0x01, 0x04, 0x3F, opcode, (uint8_t)p1, VISCA_TERMINATOR};
+      forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB");
+      ok = true;
+    } else {
+      uint8_t opcode = (action == "preset_set") ? 0x03 : (action == "preset_goto") ? 0x07 : 0x05;
+      ok = webSendPelco(cam, 0x00, opcode, 0x00, (uint8_t)p1, false, err);
+    }
+  } else if (action == "power") {
+    ok = webSetMode(cam, viaIp, VISCA_CAM_POWER, VISCA_CAM_POWER, (uint8_t)(p1 ? 0x02 : 0x03), err);
+  } else if (action == "ae") {
+    // 컨트롤러의 IRIS AUTO/MANUAL 키와 같다 - 실제로는 AE 모드다.
+    ok = webSetMode(cam, viaIp, 0x39, 0x39, (uint8_t)(p1 ? 0x03 : 0x00), err);
+  } else if (action == "focusmode") {
+    ok = webSetMode(cam, viaIp, VISCA_CAM_FOCUS_AF_MODE, VISCA_CAM_FOCUS_AF_MODE,
+                    (uint8_t)(p1 ? 0x03 : 0x02), err);
+    // 조작자가 Focus 모드를 직접 골랐으므로 One Push 되돌리기 예약을 취소한다.
+    if (ok && onePushRestoreCam == cam) onePushRestoreCam = 0;
+  } else if (action == "awb") {
+    // 유일하게 두 방언의 코드가 다른 항목이다 (버스 0x36 / VISCA 0x35).
+    ok = webSetMode(cam, viaIp, VISCA_CAM_WB_MODE, PELCO_EDIS_SET_WB_MODE,
+                    (uint8_t)(p1 ? 0x05 : 0x00), err);
+  } else if (action == "backlight") {
+    ok = webSetMode(cam, viaIp, VISCA_CAM_BACKLIGHT, VISCA_CAM_BACKLIGHT,
+                    (uint8_t)(p1 ? 0x02 : 0x03), err);
+  } else if (action == "onepush") {
+    if (viaIp) {
+      // FoMaKo는 `04 18`(One Push Trigger)을 구현하지 않아 Syntax Error로 거절한다.
+      // 모드 설정으로 우회하고, 2초 뒤 Manual로 되돌린다 (안 되돌리면 수동 초점이 막힌다).
+      uint8_t buf[6] = {0, 0x01, 0x04, VISCA_CAM_FOCUS_AF_MODE, VISCA_FOCUS_MODE_ONE_PUSH,
+                        VISCA_TERMINATOR};
+      forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB");
+      updateModeCacheFromSet(cam, VISCA_CAM_FOCUS_AF_MODE, VISCA_FOCUS_MODE_ONE_PUSH);
+      onePushRestoreCam = cam;
+      onePushRestoreDueMs = millis() + VISCA_ONE_PUSH_AF_SETTLE_MS;
+      ok = true;
+    } else {
+      // ED-P는 컨트롤러가 보내는 그대로 받는다 - 실물 컨트롤러도 되돌리지 않는다.
+      ok = webSendPelco(cam, 0x00, PELCO_EDIS_SET_CMD, PELCO_EDIS_SET_FOCUS_TRIGGER, 0x01, false,
+                        err);
+    }
+  } else if (action == "rgain") {
+    ok = webSendStep(cam, viaIp, VISCA_CAM_RGAIN, p1 > 0, err);
+  } else if (action == "bgain") {
+    ok = webSendStep(cam, viaIp, VISCA_CAM_BGAIN, p1 > 0, err);
+  } else if (action == "shutter") {
+    ok = webSendStep(cam, viaIp, VISCA_CAM_SHUTTER, p1 > 0, err);
+  } else if (action == "bright") {
+    // 패널의 BRIGHT 키 - CAM_Bright(0x0D)가 아니라 CAM_ExpComp(0x0E)다.
+    ok = webSendStep(cam, viaIp, VISCA_CAM_EXP_COMP, p1 > 0, err);
+  } else {
+    if (err) *err = "unknown action";
+    return false;
+  }
+
+  if (ok && hold) webHoldUntilMs[cam - 1] = millis() + WEB_HOLD_TIMEOUT_MS;
+  return ok;
+}
+
+// ---------------------------------------------------------------------------
+// 웹 컨트롤러: 상태 JSON
+// ---------------------------------------------------------------------------
+// 화면의 LCD 블록을 채우는 값이다. 세 가지를 구분해서 내보낸다.
+//
+//   "auto"/"manual"/... : 실제로 관측된 값
+//   "-"                 : 아직 한 번도 관측 못 함
+//
+// 두 번째가 중요하다. RS485 카메라 상태는 컨트롤러가 폴링해 줘야만 알 수 있어서, 물리
+// 컨트롤러가 꺼져 있으면 영영 관측되지 않는다 - 그럴듯한 기본값을 사실처럼 보여주느니
+// 모른다고 말하는 게 낫다.
+String webModeText(const CameraModeCache& c, uint8_t knownBit, const char* whenSet,
+                    const char* whenClear, uint8_t value, uint8_t setValue) {
+  if (!(c.known & knownBit)) return "-";
+  return (value == setValue) ? whenSet : whenClear;
+}
+
+String webStateJson(bool controlAllowed) {
+  SystemConfig& cfg = routingTable.get();
+  bool staUp = (WiFi.status() == WL_CONNECTED);
+
+  String json = "{";
+  json += "\"control\":" + String(controlAllowed ? "true" : "false");
+  json += ",\"staUp\":" + String(staUp ? "true" : "false");
+  json += ",\"sta\":\"" + String(staUp ? WiFi.localIP().toString() : String("-")) + "\"";
+  json += ",\"ap\":\"" + WiFi.softAPIP().toString() + "\"";
+  // SSID는 사용자가 정하는 값이라 따옴표/역슬래시가 들어갈 수 있다 - 그대로 실으면
+  // JSON이 깨져 화면 전체가 갱신을 멈춘다.
+  String apSsid = WiFi.softAPSSID();
+  apSsid.replace("\\", "\\\\");
+  apSsid.replace("\"", "\\\"");
+  json += ",\"apSsid\":\"" + apSsid + "\"";
+
+  const char* protoName = "VISCA";
+  switch (cfg.inputProtocol) {
+    case InputProtocol::PELCO_D: protoName = "PEL-D"; break;
+    case InputProtocol::PELCO_P: protoName = "PEL-P"; break;
+    case InputProtocol::PELCO_AUTO: protoName = "PEL-A"; break;
+    default: break;
+  }
+  json += ",\"proto\":\"" + String(protoName) + "\"";
+  json += ",\"baud\":" + String(cfg.rs485Baudrate);
+  // 물리 컨트롤러가 지금 버스를 쓰고 있는지 - 웹 조작자에게 "다른 사람이 같은 카메라를
+  // 만지고 있을 수 있다"를 알리는 유일한 수단이다(반대 방향으로는 알릴 방법이 없다).
+  json += ",\"busActive\":";
+  json += (lastBusFrameMs != 0 && (millis() - lastBusFrameMs) < WEB_BUS_ACTIVE_MS) ? "true" : "false";
+  json += ",\"txQueued\":" + String(webTxCount);
+  json += ",\"txSent\":" + String(diagnostics.webTx());
+  json += ",\"txDropped\":" + String(diagnostics.webTxDropped());
+
+  json += ",\"cams\":[";
+  for (uint8_t n = 1; n <= CAMERA_SLOT_COUNT; n++) {
+    CameraSlot* slot = routingTable.camera(n);
+    const CameraModeCache& c = modeCache[n - 1];
+    if (n > 1) json += ",";
+    json += "{\"n\":" + String(n);
+    json += ",\"path\":\"" + String(isOwnedSlot(slot) ? "ip" : "rs485") + "\"";
+    json += ",\"ip\":\"" + String(isOwnedSlot(slot) ? slot->ip.toIPAddress().toString() : String("-")) + "\"";
+    json += ",\"power\":\"" + webModeText(c, MODE_KNOWN_POWER, "ON", "STBY", c.power, 0x02) + "\"";
+    // 컨트롤러 LCD와 같은 이름을 쓴다 - IRIS는 실제로는 AE 모드다.
+    json += ",\"iris\":\"" + webModeText(c, MODE_KNOWN_AE, "AUTO", "MANUAL", c.aeMode, 0x00) + "\"";
+    json += ",\"awb\":\"" + webModeText(c, MODE_KNOWN_WB, "AUTO", "MANUAL", c.wbMode, 0x00) + "\"";
+    json += ",\"focus\":\"" + webModeText(c, MODE_KNOWN_FOCUS, "AUTO", "MANUAL", c.focusMode, 0x02) + "\"";
+    json += ",\"blc\":\"" + webModeText(c, MODE_KNOWN_BACKLIGHT, "ON", "OFF", c.backlight, 0x02) + "\"";
+    // 마지막 관측 이후 경과 시간(초). 값이 얼마나 오래된 것인지 화면에서 판단할 수 있게 한다.
+    json += ",\"age\":" + String(c.updatedMs == 0 ? -1 : (int)((millis() - c.updatedMs) / 1000));
+    json += "}";
+  }
+  json += "]}";
+  return json;
+}
+
+// 브라우저가 갱신을 멈춘 움직임을 게이트웨이가 대신 멈춘다. Wi-Fi가 끊기거나 탭이
+// 죽으면 마지막 이동 명령이 그대로 유지되므로, 이게 없으면 카메라가 계속 돈다.
+void pollWebDeadman() {
+  unsigned long now = millis();
+  for (uint8_t cam = 1; cam <= CAMERA_SLOT_COUNT; cam++) {
+    unsigned long due = webHoldUntilMs[cam - 1];
+    if (due == 0 || (long)(now - due) < 0) continue;
+
+    String err;
+    webExecuteCommand(cam, "stop", 0, 0, &err);  // webStop()이 hold를 0으로 지운다
+    if (routingTable.get().debugMode) {
+      Serial.print("[WEB] Hold expired - stop CAM");
+      Serial.println(cam);
+    }
+  }
 }
 
 // (카메라, 항목) 하나를 VISCA로 조회한다. 보냈으면 true.
@@ -1268,6 +1812,7 @@ bool consumeModeInquiryReply(uint8_t camNumber, const uint8_t* buf, uint8_t len)
   switch (pendingInquiry) {
     case ModeInquiry::POWER: {
       c.power = buf[2];
+      markModeKnown(camNumber, MODE_KNOWN_POWER);
       // Auto Power Control의 reconcileAutoPower()가 던진 확인 조회의 답일 수도 있다 -
       // 그 경우 실측 상태로 confirmed를 갱신한다. auto power control이 꺼진 카메라에도
       // 그냥 채워두지만, 그 카메라의 target은 항상 UNKNOWN이라 reconcile은 손대지 않는다.
@@ -1281,10 +1826,22 @@ bool consumeModeInquiryReply(uint8_t camNumber, const uint8_t* buf, uint8_t len)
       }
       break;
     }
-    case ModeInquiry::AE: c.aeMode = buf[2]; break;
-    case ModeInquiry::WB: c.wbMode = buf[2]; break;
-    case ModeInquiry::FOCUS: c.focusMode = buf[2]; break;
-    case ModeInquiry::BACKLIGHT: c.backlight = buf[2]; break;
+    case ModeInquiry::AE:
+      c.aeMode = buf[2];
+      markModeKnown(camNumber, MODE_KNOWN_AE);
+      break;
+    case ModeInquiry::WB:
+      c.wbMode = buf[2];
+      markModeKnown(camNumber, MODE_KNOWN_WB);
+      break;
+    case ModeInquiry::FOCUS:
+      c.focusMode = buf[2];
+      markModeKnown(camNumber, MODE_KNOWN_FOCUS);
+      break;
+    case ModeInquiry::BACKLIGHT:
+      c.backlight = buf[2];
+      markModeKnown(camNumber, MODE_KNOWN_BACKLIGHT);
+      break;
     default: break;
   }
   pendingInquiry = ModeInquiry::NONE;
@@ -1541,6 +2098,12 @@ void feedPelcoAutoByte(uint8_t b) {
   // 둘 다 아니면 노이즈 - 두 파서 모두 시작 바이트 불일치로 이미 무시한다.
 }
 
+// 웹 제어 패널. 명령 실행과 상태 조립은 위의 게이트웨이 로직이 하고, WebControl은
+// HTTP와 화면만 맡는다.
+WebControl webControl(webExecuteCommand, webStateJson);
+WebConfigServer webConfigServer(routingTable, storage, diagnostics, rs485, statusLed, connectWifi,
+                                 webControl);
+
 void setup() {
   routingTable.applyDefaults();
   if (storage.load(routingTable.get())) {
@@ -1605,6 +2168,8 @@ void loop() {
 
   while (rs485.available()) {
     uint8_t b = rs485.read();
+    // 웹 컨트롤러의 RS485 송신은 이 시각만 보고 유휴를 판단한다 (pollWebRs485Tx()).
+    lastRs485ByteMs = millis();
 
     if (rawMonitor) {
       echoRawByte(b);
@@ -1668,4 +2233,9 @@ void loop() {
   pollCameraModeInquiries();
   updateAutoPowerFromChatter();
   reconcileAutoPower();
+
+  // 웹 컨트롤러. 송신 큐가 버스 유휴를 기다리고 있고, 브라우저가 갱신을 멈춘 움직임은
+  // deadman이 대신 멈춘다. 웹을 아무도 안 쓰면 둘 다 즉시 반환한다.
+  pollWebRs485Tx();
+  pollWebDeadman();
 }

@@ -1,0 +1,8 @@
+{"control":true,"staUp":true,"sta":"192.168.0.50","ap":"192.168.4.1","apSsid":"RS485Gateway-3F2A","proto":"PEL-D","baud":9600,"busActive":true,"txQueued":0,"txSent":12,"txDropped":0,"cams":[
+{"n":1,"path":"rs485","ip":"-","power":"ON","iris":"MANUAL","awb":"AUTO","focus":"MANUAL","blc":"OFF","age":2},
+{"n":2,"path":"rs485","ip":"-","power":"-","iris":"-","awb":"-","focus":"-","blc":"-","age":-1},
+{"n":3,"path":"rs485","ip":"-","power":"STBY","iris":"AUTO","awb":"AUTO","focus":"AUTO","blc":"OFF","age":5},
+{"n":4,"path":"rs485","ip":"-","power":"ON","iris":"MANUAL","awb":"MANUAL","focus":"MANUAL","blc":"ON","age":1},
+{"n":5,"path":"rs485","ip":"-","power":"-","iris":"-","awb":"-","focus":"-","blc":"-","age":-1},
+{"n":6,"path":"ip","ip":"192.168.0.61","power":"ON","iris":"AUTO","awb":"AUTO","focus":"MANUAL","blc":"OFF","age":0},
+{"n":7,"path":"rs485","ip":"-","power":"-","iris":"-","awb":"-","focus":"-","blc":"-","age":-1}]}

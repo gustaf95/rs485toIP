@@ -633,6 +633,8 @@ void SerialMenu::printCountersMenu() {
   Serial.print("  IP TX Success         : "); Serial.println(_diagnostics.ipTxSuccess());
   Serial.print("  IP TX Failed          : "); Serial.println(_diagnostics.ipTxFailed());
   Serial.print("  RS485 TX Response     : "); Serial.println(_diagnostics.rs485TxResponse());
+  Serial.print("  Web RS485 TX          : "); Serial.println(_diagnostics.webTx());
+  Serial.print("  Web RS485 TX Dropped  : "); Serial.println(_diagnostics.webTxDropped());
   Serial.print("  Malformed Packet      : "); Serial.println(_diagnostics.malformedPacket());
   Serial.print("  Buffer Overflow       : "); Serial.println(_diagnostics.bufferOverflow());
   Serial.print("  Packet Timeout        : "); Serial.println(_diagnostics.packetTimeout());

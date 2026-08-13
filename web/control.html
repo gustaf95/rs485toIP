@@ -1,0 +1,161 @@
+<!DOCTYPE html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>PTZ Control</title><style>
+*{box-sizing:border-box}
+body{font-family:sans-serif;margin:0;padding:8px;background:#222;color:#eee;line-height:1.4}
+#bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;margin-bottom:6px}
+#bar a{color:#8cf;margin-left:auto}
+.badge{padding:1px 6px;border-radius:8px;background:#444;font-size:12px}
+.on{background:#295;color:#fff}.off{background:#633;color:#fdd}
+#warn{background:#633;color:#fdd;padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px}
+#note{background:#553;color:#ffd;padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px}
+.hide{display:none}
+#tabs{display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap}
+#tabs button{flex:1;min-width:44px;padding:6px 0;background:#333;color:#ccc;border:1px solid #555;border-radius:4px}
+#tabs button.sel{background:#08a;color:#fff;border-color:#0af}
+#lcd{background:#0b3d2e;color:#7fe;font-family:monospace;font-size:14px;padding:8px;border-radius:4px;margin-bottom:8px;white-space:pre-wrap}
+.cols{display:flex;gap:8px;flex-wrap:wrap}
+.col{flex:1 1 280px;min-width:0}
+fieldset{border:1px solid #555;border-radius:4px;margin:0 0 8px;padding:6px}
+legend{font-size:12px;color:#aaa;padding:0 4px}
+.row{display:flex;gap:4px;flex-wrap:wrap}
+button{font-size:14px;padding:10px 6px;background:#3a3a3a;color:#eee;border:1px solid #666;border-radius:4px;flex:1;min-width:56px;touch-action:none;-webkit-user-select:none;user-select:none}
+button:active{background:#08a}
+button:disabled{opacity:.4}
+#pad{position:relative;width:100%;max-width:260px;aspect-ratio:1;margin:0 auto;background:#333;border:2px solid #666;border-radius:50%;touch-action:none}
+#knob{position:absolute;left:50%;top:50%;width:56px;height:56px;margin:-28px 0 0 -28px;background:#08a;border-radius:50%}
+#spd{text-align:center;font-family:monospace;font-size:13px;color:#aaa;margin:4px 0 8px}
+#keys{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+#entry{font-family:monospace;font-size:20px;text-align:center;background:#111;border-radius:4px;padding:4px;margin-bottom:4px}
+select{width:100%;padding:6px;background:#3a3a3a;color:#eee;border:1px solid #666;border-radius:4px}
+#foot{font-size:12px;color:#888;margin-top:8px}
+body.ro .lock{pointer-events:none;opacity:.35}
+</style></head><body>
+<div id=bar><span id=gw>GW -</span><span id=iface class=badge>-</span><span id=bus class=badge>BUS</span><a href="/">Config</a></div>
+<div id=warn class=hide></div><div id=note class=hide></div>
+<div id=tabs></div>
+<div id=lcd>-</div>
+<div class="cols lock">
+<div class=col>
+<fieldset><legend>IRIS</legend><div class=row>
+<button id=iOpen>OPEN</button><button id=iClose>CLOSE</button>
+<button id=iAuto>AUTO</button><button id=iMan>MANUAL</button></div></fieldset>
+<fieldset><legend>FOCUS</legend><div class=row>
+<button id=fNear>NEAR<br>ENT</button><button id=fFar>FAR<br>ESC</button>
+<button id=fAuto>AUTO</button><button id=fMan>MANUAL</button></div>
+<div class=row style="margin-top:4px"><button id=opaf>ONE PUSH AF</button><button id=menu disabled title="not captured yet">MENU</button></div></fieldset>
+<fieldset><legend>ZOOM</legend><div class=row>
+<button id=zTele>TELE</button><button id=zWide>WIDE</button></div>
+<select id=zspd><option value=-1>Z-SPD: Std</option><option value=0>Z-SPD: 0</option><option value=1>1</option><option value=2>2</option><option value=3>3</option><option value=4>4</option><option value=5>5</option><option value=6>6</option><option value=7>7</option></select></fieldset>
+<fieldset><legend>AWB / BACK LIGHT / POWER</legend><div class=row>
+<button id=wAuto>AWB AUTO</button><button id=wMan>AWB MANUAL</button></div>
+<div class=row style="margin-top:4px"><button id=blOn>BLC ON</button><button id=blOff>BLC OFF</button></div>
+<div class=row style="margin-top:4px"><button id=pwOn>POWER ON</button><button id=pwOff>STANDBY</button></div></fieldset>
+<fieldset><legend>GAIN / BRIGHT / SHUTTER</legend>
+<div class=row><button id=rgU>R GAIN +</button><button id=rgD>R GAIN -</button></div>
+<div class=row style="margin-top:4px"><button id=bgU>B GAIN +</button><button id=bgD>B GAIN -</button></div>
+<div class=row style="margin-top:4px"><button id=brU>BRIGHT +</button><button id=brD>BRIGHT -</button></div>
+<div class=row style="margin-top:4px"><button id=shU>SHUTTER +</button><button id=shD>SHUTTER -</button></div></fieldset>
+</div>
+<div class=col>
+<fieldset><legend>PAN / TILT</legend>
+<div id=pad><div id=knob></div></div><div id=spd>PAN 0  TILT 0</div></fieldset>
+<fieldset><legend>KEYPAD</legend><div id=entry>---</div>
+<div id=keys>
+<button data-k=1>1</button><button data-k=2>2</button><button data-k=3>3</button>
+<button data-k=4>4</button><button data-k=5>5</button><button data-k=6>6</button>
+<button data-k=7>7</button><button data-k=8>8</button><button data-k=9>9</button>
+<button data-k=C>CLR</button><button data-k=0>0</button><button data-k=CAM>CAM</button>
+</div></fieldset>
+<fieldset><legend>PRESET (keypad number)</legend><div class=row>
+<button id=pGoto>GOTO</button><button id=pSet>SET</button><button id=pClr>CLEAR</button></div></fieldset>
+</div></div>
+<div id=foot>-</div>
+<script>
+var cam=1,entry='',active=null,noteT=null;
+function $(i){return document.getElementById(i)}
+function note(m){var n=$('note');n.textContent=m;n.classList.remove('hide');clearTimeout(noteT);noteT=setTimeout(function(){n.classList.add('hide')},4000)}
+function send(a,p1,p2){
+ var b=new URLSearchParams({cam:cam,action:a,p1:p1===undefined?0:p1,p2:p2===undefined?0:p2});
+ return fetch('/api/cmd',{method:'POST',body:b}).then(function(r){return r.json()})
+  .then(function(j){if(!j.ok)note(j.err)}).catch(function(){});
+}
+setInterval(function(){if(active)send(active.a,active.p1,active.p2())},300);
+function ends(el,fn){['pointerup','pointercancel','pointerleave'].forEach(function(t){el.addEventListener(t,fn)})}
+/* 패드는 pointerleave를 듣지 않는다 - 원 밖(모서리)으로 조금만 나가도 멈춰버려서
+   조이스틱을 끝까지 미는 조작이 안 된다. 포인터 캡처를 잡아둬서 밖에서 손을 떼도
+   pointerup은 들어오고, 그마저 놓쳐도 게이트웨이의 deadman이 멈춘다. */
+function endsUp(el,fn){['pointerup','pointercancel'].forEach(function(t){el.addEventListener(t,fn)})}
+function holdBind(id,a,p1,p2fn){var el=$(id);
+ el.addEventListener('pointerdown',function(e){e.preventDefault();el.setPointerCapture(e.pointerId);
+  active={a:a,p1:p1,p2:p2fn||function(){return 0}};send(a,p1,active.p2())});
+ ends(el,function(){if(active&&active.a===a){active=null;send('stop')}});
+}
+function stepBind(id,a,p1){var el=$(id),t=null;
+ el.addEventListener('pointerdown',function(e){e.preventDefault();el.setPointerCapture(e.pointerId);
+  send(a,p1);t=setInterval(function(){send(a,p1)},300)});
+ ends(el,function(){if(t){clearInterval(t);t=null}});
+}
+function onceBind(id,a,p1){$(id).addEventListener('click',function(){send(a,p1)})}
+var zs=function(){return parseInt($('zspd').value)};
+holdBind('zTele','zoom',1,zs);holdBind('zWide','zoom',-1,zs);
+holdBind('fNear','focus',-1);holdBind('fFar','focus',1);
+stepBind('iOpen','iris',1);stepBind('iClose','iris',-1);
+stepBind('rgU','rgain',1);stepBind('rgD','rgain',-1);
+stepBind('bgU','bgain',1);stepBind('bgD','bgain',-1);
+stepBind('brU','bright',1);stepBind('brD','bright',-1);
+stepBind('shU','shutter',1);stepBind('shD','shutter',-1);
+onceBind('iAuto','ae',0);onceBind('iMan','ae',1);
+onceBind('fAuto','focusmode',0);onceBind('fMan','focusmode',1);
+onceBind('wAuto','awb',0);onceBind('wMan','awb',1);
+onceBind('blOn','backlight',1);onceBind('blOff','backlight',0);
+onceBind('pwOn','power',1);onceBind('pwOff','power',0);
+onceBind('opaf','onepush',0);
+var pad=$('pad'),knob=$('knob'),padOn=false,cp=0,ct=0;
+function padAt(e){var r=pad.getBoundingClientRect();
+ var dx=(e.clientX-r.left-r.width/2)/(r.width/2),dy=(e.clientY-r.top-r.height/2)/(r.height/2);
+ dx=Math.max(-1,Math.min(1,dx));dy=Math.max(-1,Math.min(1,dy));
+ if(Math.abs(dx)<0.12)dx=0;if(Math.abs(dy)<0.12)dy=0;
+ knob.style.transform='translate('+(dx*38)+'px,'+(dy*38)+'px)';
+ var p=Math.round(dx*63),t=Math.round(-dy*63);
+ $('spd').textContent='PAN '+p+'  TILT '+t;
+ if(p!==cp||t!==ct){cp=p;ct=t;active={a:'move',p1:p,p2:function(){return ct}};send('move',p,t)}
+}
+pad.addEventListener('pointerdown',function(e){e.preventDefault();pad.setPointerCapture(e.pointerId);padOn=true;padAt(e)});
+pad.addEventListener('pointermove',function(e){if(padOn)padAt(e)});
+endsUp(pad,function(){if(!padOn)return;padOn=false;cp=ct=0;active=null;
+ knob.style.transform='';$('spd').textContent='PAN 0  TILT 0';send('stop')});
+document.querySelectorAll('#keys button').forEach(function(b){b.addEventListener('click',function(){
+ var k=b.dataset.k;
+ if(k==='C')entry='';
+ else if(k==='CAM'){var n=parseInt(entry||'0');if(n>=1&&n<=7){cam=n;drawTabs()}else note('CAM 1-7');entry=''}
+ else if(entry.length<3)entry+=k;
+ $('entry').textContent=entry||'---';
+})});
+function preset(a){var n=parseInt(entry||'0');if(!(n>=1&&n<=255)){note('preset 1-255 on the keypad');return}send(a,n)}
+$('pGoto').addEventListener('click',function(){preset('preset_goto')});
+$('pSet').addEventListener('click',function(){preset('preset_set')});
+$('pClr').addEventListener('click',function(){preset('preset_clear')});
+function drawTabs(){var h='';for(var n=1;n<=7;n++)h+='<button data-c="'+n+'"'+(n===cam?' class=sel':'')+'>'+n+'</button>';
+ $('tabs').innerHTML=h;
+ document.querySelectorAll('#tabs button').forEach(function(b){b.addEventListener('click',function(){cam=parseInt(b.dataset.c);drawTabs();poll()})});
+}
+function pad3(n){return ('00'+n).slice(-3)}
+function poll(){fetch('/api/state').then(function(r){return r.json()}).then(function(s){
+ $('gw').textContent='GW '+s.sta;
+ var f=$('iface');f.textContent=s.control?'STA':'AP';f.className='badge '+(s.control?'on':'off');
+ var b=$('bus');b.textContent=s.busActive?'CTRL ACTIVE':'BUS IDLE';b.className='badge '+(s.busActive?'on':'');
+ var w=$('warn');
+ if(s.control){w.classList.add('hide');document.body.classList.remove('ro')}
+ else{w.textContent='AP 접속입니다 - 모니터링만 됩니다. 제어하려면 STA 주소 '+s.sta+' 로 접속하세요.';
+  w.classList.remove('hide');document.body.classList.add('ro')}
+ var c=s.cams[cam-1];
+ $('lcd').textContent=
+  s.proto+'.'+s.baud+'   CAM:'+pad3(cam)+'   '+(c.path==='ip'?c.ip:'RS485 bus')+'\n'+
+  'IRIS :'+c.iris+'   AWB:'+c.awb+'\n'+
+  'FOCUS:'+c.focus+'   BLC:'+c.blc+'   POWER:'+c.power+'\n'+
+  (c.age<0?'(no reading yet)':'updated '+c.age+'s ago');
+ $('foot').textContent='web tx sent '+s.txSent+' / queued '+s.txQueued+' / dropped '+s.txDropped+'   AP '+s.ap+' ('+s.apSsid+')';
+}).catch(function(){})}
+drawTabs();poll();setInterval(poll,1000);
+</script></body></html>

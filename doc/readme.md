@@ -964,6 +964,8 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
   IP TX Success        : 45
   IP TX Failed         : 0
   RS485 TX Response    : 0
+  Web RS485 TX         : 0
+  Web RS485 TX Dropped : 0
   Malformed Packet     : 0
   Buffer Overflow      : 0
   Packet Timeout       : 0
@@ -992,6 +994,8 @@ RX/TX/DE-RE 핀 입력 시 유효성 검사:
 | IP TX Success       | IP 전송 성공 횟수                             |
 | IP TX Failed        | IP 전송 실패 횟수                             |
 | RS485 TX Response   | RS485 컨트롤러로 응답을 보낸 횟수             |
+| Web RS485 TX        | 웹 제어 패널이 RS485로 내보낸 마스터 프레임 수 (14절) |
+| Web RS485 TX Dropped | 버스 유휴 창을 못 잡아 버린 웹 제어 프레임 수 — 계속 올라가면 버스가 그만큼 바쁘다는 뜻 |
 | Malformed Packet    | 형식 이상 패킷 수                             |
 | Buffer Overflow     | 수신 버퍼 초과 횟수                           |
 | Packet Timeout      | 패킷 완성 전 timeout 횟수                     |
@@ -1220,6 +1224,9 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 | `GET /debug/raw` | Raw Byte Monitor | 1초 자동 새로고침, 파싱/체크섬과 무관하게 항상 채워지는 별도 로그(13.3절) |
 | `POST /debug/test-command` | Send Test Command | Pelco-D/P Query Pan Position 프로브 전송 후 `/debug/raw`로 이동 |
 | `GET`/`POST /factory-reset` | Factory Reset | 경고 문구 + 확인 버튼(POST 전용, 타이핑 확인 대신 실수로 못 누르게 별도 페이지+버튼 클릭) |
+| `GET /control` | (Serial 대응 없음) | PTZ 제어 패널(14절). 화면 원본은 `web/control.html`이고 빌드 시 gzip PROGMEM 배열로 구워진다 |
+| `GET /api/state` | | 제어 패널이 1초마다 폴링하는 상태 JSON |
+| `POST /api/cmd` | | 제어 명령 하나. **AP 접속이면 403** |
 
 자동 새로고침은 JS 없이 `<meta http-equiv="refresh">`만 쓴다 — 임베디드
 환경에서 가장 단순하고 확실하게 동작하는 폴링 방식이라 이걸 기본으로 택했다.
@@ -1255,7 +1262,35 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 
 ---
 
-## 14. 구현 제외 항목
+## 14. Web PTZ Controller
+
+`/control`에 ZU-EPC7000 물리 컨트롤러를 그대로 옮긴 제어 패널이 있다. 설정 화면과 같은
+서버·같은 포트를 쓰므로 주소는 하나뿐이다. **전체 문서는
+[Web_controller.md](Web_controller.md)** 에 있고, 여기서는 요점만 적는다.
+
+- **STA 주소로 접속해야 제어된다.** AP(`192.168.4.1`)로 들어오면 페이지는 열리지만
+  조작 UI가 잠기고 `POST /api/cmd`도 403으로 거절된다 — 제어 화면은 설정 화면과 달리
+  누구나 폰으로 열어두는 화면이라, AP 비밀번호 하나를 권한 경계로 삼지 않는다.
+- **경로는 슬롯의 IP 유무로 갈린다.** IP가 설정된 슬롯은 IP VISCA로, 비어 있는 슬롯은
+  RS485 Pelco-D 마스터 프레임으로 나간다. 설정 필드는 새로 만들지 않았다(10.1절의 이유).
+- **RS485로 나갈 때는 버스가 30ms 이상 조용할 때만 끼어든다**(`WEB_TX_BUS_IDLE_MS`).
+  이 버스에는 ZU-EPC7000이 이미 마스터로 있고, 게이트웨이는 자기 송신 중에 버스를 들을 수
+  없어 충돌을 감지할 방법이 없다. 조회(`D3`)는 절대 내보내지 않는다 — 그 답을 컨트롤러가
+  자기 질문의 답으로 오해한다.
+- **상태 표시는 추가 트래픽 없이 얻는다.** 컨트롤러가 폴링하는 `D3` 질문과 카메라의 `D7`
+  응답을 둘 다 엿들어(`sniffBusFrame()`) 모드 캐시를 채운다. 한 번도 관측 못 한 항목은
+  `-`로 표시한다.
+- **이동은 임대다.** 브라우저가 300ms마다 갱신하지 않으면 700ms 뒤 게이트웨이가 스스로
+  Stop을 만든다(`WEB_HOLD_TIMEOUT_MS`) — 탭이 죽거나 Wi-Fi가 끊겨도 카메라가 계속 돌지
+  않게 하기 위함이다.
+- 웹에서 바꾼 모드는 기존 `modeCache`에 반영되므로 **물리 컨트롤러 LCD도 따라온다.**
+
+MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡처하지 못했다
+([Web_controller.md 4절](Web_controller.md)).
+
+---
+
+## 15. 구현 제외 항목
 
 다음 기능은 구현하지 않는다.
 
@@ -1268,9 +1303,14 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 
 ---
 
-## 15. 소스 구조
+## 16. 소스 구조
 
 ```text
+/web
+  control.html          제어 패널 화면 원본 (빌드 시 gzip PROGMEM으로 구워짐)
+  api/state             브라우저 미리보기용 가짜 응답 (web/README.md)
+/tools
+  embed_web.py          web/*.html -> src/generated/WebAssets.h (PlatformIO pre-build)
 /src
   main.cpp
   config.h
@@ -1283,6 +1323,7 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
   RoutingTable.h / .cpp
   SerialMenu.h / .cpp
   WebConfigServer.h / .cpp
+  WebControl.h / .cpp
   Rs485PinValidation.h / .cpp
   GatewayActions.h / .cpp
   Diagnostics.h / .cpp
@@ -1303,6 +1344,7 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 | RoutingTable        | 카메라 1~7 IP/Port/Protocol/Address Mode 관리            |
 | SerialMenu          | USB Serial 메뉴 입력/출력                                |
 | WebConfigServer     | AP+STA 웹 설정 서버(13절) — SerialMenu와 같은 백엔드 공유 |
+| WebControl          | 웹 PTZ 제어 패널(14절) — `/control` 화면과 `/api/*`, AP 차단 판정 |
 | Rs485PinValidation  | GPIO 핀 검증 규칙(Serial/Web 공유)                       |
 | GatewayActions      | Factory Reset, Pelco 테스트 커맨드 생성, AP 설정 적용(Serial/Web 공유) |
 | Diagnostics         | 카운터, 최근 패킷/raw 바이트 로그, 디버그 출력 관리      |
@@ -1311,7 +1353,7 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 
 ---
 
-## 16. Claude Code 구현 지시사항
+## 17. Claude Code 구현 지시사항
 
 이 프로젝트는 Arduino ESP32 펌웨어로 구현한다.
 
