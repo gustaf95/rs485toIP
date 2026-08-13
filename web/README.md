@@ -4,8 +4,15 @@
 [`tools/embed_web.py`](../tools/embed_web.py)가 이 파일을 gzip으로 압축해
 `src/generated/WebAssets.h`(PROGMEM 배열)로 굽고, `WebControl.cpp`가 그걸 그대로 내보낸다.
 
+> **먼저 짚어둘 것**: 이 파일은 `main.cpp`와 같은 지위의 **소스 파일**이다 — 실행 중에
+> 읽히지 않고 빌드할 때 펌웨어로 들어간다. 실제로 화면을 볼 때는 **브라우저 주소창에
+> 게이트웨이 주소를 친다**(`http://192.168.0.50/control`). 이 파일을 더블클릭해서 여는 것은
+> 게이트웨이 접속과 아무 관계가 없다(아래 "브라우저에서 미리 보기"는 예외 — 화면 모양만
+> 보는 용도다).
+
 **고치는 방법**: `control.html`을 고치고 평소처럼 빌드/업로드하면 된다. 별도의 변환이나
-파일시스템 업로드 단계는 없다.
+파일시스템 업로드 단계는 없다. 반대로 **파일만 저장하고 빌드하지 않으면 장비의 화면은
+그대로**다.
 
 ```
 web/control.html  →  (pre-build) tools/embed_web.py  →  src/generated/WebAssets.h  →  펌웨어
