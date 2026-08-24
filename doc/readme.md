@@ -1289,6 +1289,12 @@ ZU-EPC7000 물리 컨트롤러를 그대로 옮긴 제어 패널이다. 브라�
 MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡처하지 못했다
 ([Web_controller.md 4절](Web_controller.md)).
 
+패널이 쓰는 `POST /api/cmd` / `GET /api/state`는 브라우저 전용이 아니라 그냥 HTTP라,
+외부 프로그램이나 스크립트도 그대로 부를 수 있다. 그 경로를 **외부 제어의 공식**
+인터페이스로 확정했고, PC 쪽 래퍼 CLI [`tools/ptz.py`](../tools/ptz.py)가 그 위에 있다
+(`ptz.py 6 preset goto 3`). 명령 어휘, deadman 규약, 속도 한계, 검토했다가 접은 대안들
+(UDP Pelco-D, 텍스트 프로토콜, VISCA over IP)은 **[cli_interface.md](cli_interface.md)** 에 있다.
+
 ---
 
 ## 15. 구현 제외 항목
