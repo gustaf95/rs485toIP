@@ -74,6 +74,8 @@ class WebConfigServer {
 
   // ---- 렌더링 도우미 ----
   String rs485PageBody(const String& error);
+  // 상단 메뉴. 현재 URI(_server.uri())를 보고 지금 화면을 표시한다.
+  String navHtml();
   // refreshSeconds > 0이면 <meta http-equiv="refresh">를 넣어 폴링 화면(Counters,
   // Live/Raw Monitor)을 만든다. 0이면 일반 페이지.
   void sendPage(const String& title, const String& bodyHtml, uint16_t refreshSeconds = 0);

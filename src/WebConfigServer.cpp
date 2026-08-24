@@ -28,6 +28,18 @@ String selectOption(int value, int current, const String& label) {
 }
 
 const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
+
+// 상단 메뉴의 설정 화면들. 제어 패널(/control)은 여기 없다 - 설정 항목이 아니라
+// 다른 화면으로 넘어가는 전환이라 navHtml()에서 따로 오른쪽 끝에 붙인다.
+struct NavItem {
+  const char* path;
+  const char* label;
+};
+const NavItem kNavItems[] = {
+    {"/", "Status"},         {"/network", "Network"},   {"/rs485", "RS485"},
+    {"/routing", "Routing"}, {"/counters", "Counters"}, {"/debug", "Debug"},
+    {"/factory-reset", "Factory Reset"},
+};
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -84,6 +96,32 @@ void WebConfigServer::poll() {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
+// 상단 메뉴. 지금 보고 있는 화면을 굵게 표시하고, 제어 패널은 오른쪽 끝에 버튼으로
+// 떼어 놓는다.
+//
+// 떼어 놓은 이유는 눈에 안 띄어서다. 설정 링크 여덟 개 사이에 끼워두면 나머지와 똑같이
+// 생긴 글자 한 덩어리라 "설정 항목 중 하나"로 읽히고 그냥 지나친다. /control 상단의
+// Config 링크도 오른쪽 끝에 있으므로, 같은 자리에 두면 두 화면을 오가는 길이 좌우 대칭이
+// 되어 왕복이 눈에 들어온다.
+String WebConfigServer::navHtml() {
+  String uri = _server.uri();
+  String html = "<nav>";
+  for (const NavItem& item : kNavItems) {
+    // 정확히 일치하거나, 하위 경로일 때 켠다 - /routing/cam이 Routing을,
+    // /debug/live가 Debug를 가리켜야 한다. 접두사만 보면 안 되는 이유는 Status("/")다:
+    // 모든 경로가 "/"로 시작해서 Status가 항상 켜져 버린다.
+    bool here = (uri == item.path) || uri.startsWith(String(item.path) + "/");
+    html += "<a href=\"";
+    html += item.path;
+    html += here ? "\" class=\"here\">" : "\">";
+    html += item.label;
+    html += "</a>";
+  }
+  html += "<a class=\"panel\" href=\"/control\">Control Panel &rarr;</a>";
+  html += "</nav><hr>";
+  return html;
+}
+
 void WebConfigServer::sendPage(const String& title, const String& bodyHtml, uint16_t refreshSeconds) {
   String html;
   html += "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
@@ -92,7 +130,10 @@ void WebConfigServer::sendPage(const String& title, const String& bodyHtml, uint
   }
   html += "<title>" + htmlEscape(title) + "</title><style>";
   html += "body{font-family:sans-serif;max-width:640px;margin:1em auto;padding:0 1em;line-height:1.5}";
-  html += "nav{margin-bottom:1em}nav a{margin-right:0.8em}";
+  html += "nav{display:flex;flex-wrap:wrap;align-items:center;gap:0.3em 0.8em;margin-bottom:1em}";
+  html += "nav a.here{font-weight:bold;color:#000;text-decoration:none}";
+  html += "nav a.panel{margin-left:auto;padding:4px 12px;border-radius:4px;"
+          "background:#0a72a8;color:#fff;text-decoration:none;font-weight:bold}";
   html += "table{border-collapse:collapse;width:100%;margin:0.5em 0}";
   html += "td,th{border:1px solid #ccc;padding:4px 8px;text-align:left}";
   html += "label{display:block;margin:0.6em 0}";
@@ -100,10 +141,7 @@ void WebConfigServer::sendPage(const String& title, const String& bodyHtml, uint
   html += "button,input[type=submit]{padding:6px 12px;margin-top:0.5em}";
   html += "pre{background:#f4f4f4;padding:0.6em;overflow-x:auto}";
   html += "</style></head><body>";
-  html += "<nav><a href=\"/\">Status</a><a href=\"/control\"><b>Control</b></a>"
-          "<a href=\"/network\">Network</a><a href=\"/rs485\">RS485</a>"
-          "<a href=\"/routing\">Routing</a><a href=\"/counters\">Counters</a><a href=\"/debug\">Debug</a>"
-          "<a href=\"/factory-reset\">Factory Reset</a></nav><hr>";
+  html += navHtml();
   html += "<h2>" + htmlEscape(title) + "</h2>";
   html += bodyHtml;
   html += "</body></html>";
