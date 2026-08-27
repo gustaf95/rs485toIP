@@ -284,6 +284,20 @@
 // 가독성용 구분자).
 #define RAW_MONITOR_GAP_MS 50
 
+// Diagnostics의 raw 로그 한 줄이 가질 수 있는 최대 글자 수. 이걸 넘으면 유휴 간격을
+// 기다리지 않고 그 자리에서 줄을 끊는다.
+//
+// **상한이 없으면 힙을 다 먹는다.** 그 버퍼(main.cpp의 diagRawLineBuf)는 위
+// RAW_MONITOR_GAP_MS 이상 버스가 조용해져야만 비워지는데, 컨트롤러 폴링 간격이 그보다
+// 짧으면 줄이 영영 안 끊긴다 - 그리고 실제 간격 분포는 아직 측정되지 않았다
+// (doc/todo.md 1.5절). 9600bps 연속 트래픽이면 초당 2.8KB씩 자라고, Arduino String은
+// 16바이트마다 realloc하므로 누적 복사량이 길이의 제곱으로 늘어난다. 100KB에 닿기
+// 훨씬 전에 loop()가 먼저 느려져 RS485 프레임을 잃는다.
+//
+// 512자면 raw 바이트 약 170개로, Pelco-D 프레임 24개에 해당한다 - 한 화면에 보기에도
+// 이 정도가 상한이다.
+#define DIAG_RAW_LINE_MAX_CHARS 512
+
 // ---- Web PTZ Controller (doc/Web_controller.md) ----
 // 게이트웨이가 직접 명령의 출발점이 되는 기능이다 - 브라우저에서 누른 것을 IP 카메라에는
 // VISCA로, RS485 카메라에는 Pelco-D 마스터 프레임으로 내보낸다.

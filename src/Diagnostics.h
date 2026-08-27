@@ -48,16 +48,27 @@ class Diagnostics {
 
   String uptimeString() const;
 
-  // Debug Mode 화면의 "Show Last 20 Packets"용 최근 로그 (최신순).
+  // millis()의 32비트 래핑을 세어 49.7일 넘게 켜져 있어도 uptime이 맞게 한다.
+  // loop()에서 매 회전 호출해야 한다 - 두 번의 호출 사이에 49.7일이 지나면 놓친다.
+  void tickUptime();
+
+  // Debug Mode 화면의 "Show Last 20 Packets"용 최근 로그.
+  //
+  // 링버퍼다 - index 0이 최신이고, recentLogAt()이 head에서 거꾸로 짚어준다.
+  // 예전에는 배열을 통째로 한 칸씩 밀었는데(항목 하나당 String 대입 19회), 이 로그는
+  // Debug Mode와 무관하게 패킷마다 채워지므로 그 이동이 재부팅 때까지 초당 수백 번씩
+  // 계속됐다. head 인덱스만 옮기면 대입은 한 번이다.
   void pushLog(const String& entry);
-  const String* recentLog() const { return _recentLog; }
+  // index 0 = 최신. 아직 안 채워진 칸은 빈 문자열이다.
+  const String& recentLogAt(uint8_t index) const;
   uint8_t recentLogDepth() const { return DIAG_LOG_DEPTH; }
 
   // Raw Byte Monitor(Serial/Web 공통)용 별도 링버퍼. 파싱된 RX/TX 로그와 섞이지
   // 않도록 분리했다 - main.cpp가 Input Protocol/화면 상태와 무관하게 RS485 바이트가
   // 들어올 때마다 항상 채운다(웹 페이지가 폴링할 때 데이터가 있도록).
   void pushRawLog(const String& entry);
-  const String* recentRawLog() const { return _recentRawLog; }
+  // index 0 = 최신.
+  const String& recentRawLogAt(uint8_t index) const;
   uint8_t recentRawLogDepth() const { return DIAG_RAW_LOG_DEPTH; }
 
   // 라우팅 테이블 카메라 ID(1~7)로 들어왔지만 게이트웨이가 해석하지 못했거나(Unknown
@@ -88,8 +99,15 @@ class Diagnostics {
   uint32_t _packetTimeout = 0;
   uint32_t _wifiReconnect = 0;
 
+  // 링버퍼. _logHead는 **다음에 쓸** 칸을 가리키므로, 최신 항목은 그 바로 앞이다.
   String _recentLog[DIAG_LOG_DEPTH];
+  uint8_t _logHead = 0;
   String _recentRawLog[DIAG_RAW_LOG_DEPTH];
+  uint8_t _rawLogHead = 0;
+
+  // millis() 래핑 횟수와 직전 관측값 (tickUptime() 참고).
+  uint32_t _millisWraps = 0;
+  uint32_t _lastMillis = 0;
 
   // signature가 중복 판정 키(카메라+사유+원본 바이트, 발생 시각/횟수는 제외)를 겸한다 -
   // recordUnhandledPacket()이 이 문자열로 기존 항목을 찾는다.

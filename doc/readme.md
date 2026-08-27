@@ -236,6 +236,35 @@ C3 모듈을 쓰는 편이 낫다.
 세 개뿐이다. 12.2.2절의 경고 대상(2/8/9 스트래핑, 20/21 부팅 로그)을 피하면
 0, 1, 3, 4, 5, 6, 7, 10이 남는다 — 기본값 4/5/6이 그중 하나다.
 
+## 3.6 펌웨어 버전 표시
+
+Serial 메인 메뉴와 웹 Status/Firmware 화면이 지금 도는 펌웨어의 출처를 보여준다.
+
+```text
+ Firmware : f992a84 (RS485toIP_ESP32C3mini)
+ Built    : 2026-08-27 23:14
+ Board    : ESP32-C3 Super Mini
+```
+
+커밋되지 않은 변경이 섞인 빌드면 리비전에 `+dirty`가 붙는다 — 그 경우 리비전만으로는
+소스를 재현할 수 없다는 뜻이다.
+
+**손으로 관리하던 `v2.0.0` 문자열을 대체한 것이다.** 손으로 적는 버전은 올리는 걸 잊는
+순간 거짓말이 되고, 그러면 OTA로 올린 게 실제로 반영됐는지 확인할 방법이 없어진다
+(13.4.1절).
+
+값은 [tools/firmware_version.py](tools/firmware_version.py)가 빌드마다
+`src/generated/FirmwareInfo.h`로 굽는다. 알아둘 것 두 가지:
+
+- **`-D` 빌드 플래그로 넣지 않았다.** 그러면 커밋할 때마다 플래그가 바뀌어 프로젝트가
+  통째로 다시 컴파일된다. 헤더로 두고, 그걸 포함하는 곳을 `FirmwareVersion.cpp` 하나로
+  몰아둬서 매 빌드 다시 짓는 건 그 작은 파일 하나뿐이다.
+- **`__DATE__`/`__TIME__`을 쓰지 않는다.** 그건 *그 파일이 마지막으로 컴파일된* 시각이라,
+  다른 파일만 고쳐 빌드하면 바이너리는 새것인데 표시는 옛날 그대로가 된다.
+- dirty 판정에 `git status --porcelain`을 쓰지 않는다. 그건 stat 캐시를 보기 때문에
+  내용이 같아도 타임스탬프만 바뀐 파일(클라우드 동기화 폴더에서 흔하다)을 수정으로
+  report한다 — 이 저장소에서 실제로 그 오탐이 나왔다. 내용을 비교하는 `git diff --quiet`로 판정한다.
+
 ---
 
 ## 4. VISCA 주소와 라우팅 기본 개념
@@ -1551,11 +1580,13 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
   api/state             브라우저 미리보기용 가짜 응답 (web/README.md)
 /tools
   embed_web.py          web/*.html -> src/generated/WebAssets.h (PlatformIO pre-build)
+  firmware_version.py   빌드 시각/git 리비전 -> src/generated/FirmwareInfo.h (pre-build)
   ptz.py                외부 제어용 CLI (doc/cli_interface.md)
 /src
   main.cpp
   config.h
   BoardProfile.h        보드마다 다른 하드웨어 사실(UART 번호, 기본 핀, 예약 핀) 전부
+  FirmwareVersion.h / .cpp  빌드 시각 / git 리비전 (tools/firmware_version.py가 굽는다)
   ViscaParser.h / .cpp
   PelcoDParser.h / .cpp
   PelcoPParser.h / .cpp
@@ -1582,6 +1613,7 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
 | 모듈                | 역할                                                    |
 | ------------------- | ------------------------------------------------------- |
 | BoardProfile        | 보드 의존 상수의 유일한 출처 — ESP32 클래식 / ESP32-C3 (3.1절) |
+| FirmwareVersion     | 지금 도는 펌웨어의 빌드 시각과 git 리비전 (3.6절)        |
 | ViscaParser         | `0xFF` 기준 VISCA 패킷 파싱                              |
 | PelcoDParser        | Pelco-D 고정 7바이트 프레임 파싱(합산 체크섬)            |
 | PelcoPParser        | Pelco-P 고정 8바이트 프레임 파싱(XOR 체크섬)             |

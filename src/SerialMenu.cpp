@@ -1,11 +1,15 @@
 #include "SerialMenu.h"
 #include <WiFi.h>
 #include "BoardProfile.h"
+#include "FirmwareVersion.h"
 #include "Rs485PinValidation.h"
 #include "GatewayActions.h"
 
 namespace {
 const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
+
+// 한 줄 입력의 최대 길이. 메뉴에서 가장 긴 입력이 Wi-Fi 비밀번호(63자)라 넉넉하다.
+const uint16_t kMaxLineLength = 96;
 }  // namespace
 
 String SerialMenu::protocolName(ProtocolMode mode) {
@@ -102,6 +106,9 @@ void SerialMenu::poll() {
       }
     } else {
       _lastLineEndChar = 0;
+      // 개행 없이 계속 들어오면 이 버퍼가 무한정 자란다. 메뉴 입력은 길어야 수십 자라
+      // 상한을 넘는 문자는 조용히 버린다 - 화면에도 안 찍어서 뭔가 잘못됐다는 게 보인다.
+      if (_lineBuffer.length() >= kMaxLineLength) continue;
       Serial.write(c);
       _lineBuffer += c;
     }
@@ -140,7 +147,14 @@ void SerialMenu::printMainMenu() {
   Serial.println();
   Serial.println("============================================================");
   Serial.println(" ESP32 RS485 VISCA to IP VISCA Gateway");
-  Serial.println(" Firmware : v2.0.0");
+  // 손으로 관리하던 "v2.0.0"을 실제 빌드에서 나온 값으로 바꿨다 - 손으로 적는 버전은
+  // 올리는 걸 잊는 순간 거짓말이 되고, 그러면 OTA로 올린 게 반영됐는지 알 수 없다.
+  Serial.print(" Firmware : ");
+  Serial.println(firmwareVersion());
+  Serial.print(" Built    : ");
+  Serial.println(firmwareBuildTime());
+  Serial.print(" Board    : ");
+  Serial.println(BOARD_NAME);
   Serial.println("============================================================");
   Serial.println();
   Serial.println("[STATUS]");
@@ -769,7 +783,7 @@ void SerialMenu::handleDebugMenu(const String& line) {
   } else if (line == "3") {
     Serial.println("---- Last packets (most recent first) ----");
     for (uint8_t i = 0; i < _diagnostics.recentLogDepth(); i++) {
-      const String& entry = _diagnostics.recentLog()[i];
+      const String& entry = _diagnostics.recentLogAt(i);
       if (entry.length() == 0) continue;
       Serial.println(entry);
     }

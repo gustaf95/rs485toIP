@@ -216,8 +216,20 @@ String diagRawLineBuf;
 // 무관하게 RS485 바이트가 들어올 때마다 항상 Diagnostics의 raw 로그에 쌓아서
 // WebConfigServer의 /debug/raw 폴링이 언제든 볼 게 있게 한다. 문자열 append + 링버퍼
 // push라 비용이 작아 항상 켜둬도 괜찮다.
+// 열려 있는 줄을 확정해 링버퍼로 넘긴다. 유휴 간격으로 끊길 때와 길이 상한에 걸릴 때
+// 둘 다 여기를 지난다.
+void flushDiagRawLog() {
+  if (!diagRawLineOpen) return;
+  diagRawLineBuf.toUpperCase();
+  diagnostics.pushRawLog(diagRawLineBuf);
+  diagRawLineOpen = false;
+}
+
 void accumulateDiagRawLog(uint8_t b) {
   if (!diagRawLineOpen) {
+    // 길이를 0으로 되돌리되 확보해둔 용량은 유지된다(Arduino String은 줄일 때
+    // realloc하지 않는다). setup()에서 한 번 reserve해두면 이 버퍼는 그 뒤로 다시
+    // 할당되지 않는다 - 바이트마다 힙을 건드리던 것이 통째로 사라진다.
     diagRawLineBuf = "";
     diagRawLineOpen = true;
   }
@@ -225,13 +237,15 @@ void accumulateDiagRawLog(uint8_t b) {
   diagRawLineBuf += String(b, HEX);
   diagRawLineBuf += ' ';
   lastDiagRawByteMs = millis();
+
+  // **유휴 간격만 믿고 기다리지 않는다.** 버스가 쉬지 않으면 그 간격은 오지 않고,
+  // 그러면 이 버퍼가 힙을 다 먹을 때까지 자란다 (config.h의 DIAG_RAW_LINE_MAX_CHARS 주석).
+  if (diagRawLineBuf.length() >= DIAG_RAW_LINE_MAX_CHARS) flushDiagRawLog();
 }
 
 void pollDiagRawLog() {
   if (diagRawLineOpen && (millis() - lastDiagRawByteMs) > RAW_MONITOR_GAP_MS) {
-    diagRawLineBuf.toUpperCase();
-    diagnostics.pushRawLog(diagRawLineBuf);
-    diagRawLineOpen = false;
+    flushDiagRawLog();
   }
 }
 
@@ -382,6 +396,17 @@ void maintainWifi() {
   if (strlen(cfg.wifi.ssid) == 0) return;
 
   if (WiFi.status() == WL_CONNECTED) {
+    // **재연결은 여기서 센다.** 예전에는 아래 WiFi.begin() 바로 뒤에서 세려고 했는데,
+    // begin() 직후에는 아직 연결이 안 되어 있어서(붙는 데 수 초 걸린다) 그 조건이 참이
+    // 되는 일이 없었다 - Counters 화면의 WiFi Reconnect가 영원히 0이었다. 하필 밤사이
+    // Wi-Fi가 끊겼었는지 확인할 유일한 지표가 그것이라 더 문제였다.
+    if (!wasWifiConnected) {
+      diagnostics.recordWifiReconnect();
+      if (serialMenu.menuActive()) {
+        Serial.print("WiFi reconnected: ");
+        Serial.println(WiFi.localIP());
+      }
+    }
     wasWifiConnected = true;
     return;
   }
@@ -395,15 +420,9 @@ void maintainWifi() {
   if (now - lastWifiRetryMs < kWifiRetryIntervalMs) return;
   lastWifiRetryMs = now;
 
+  // 붙었는지는 여기서 보지 않는다 - 이 호출은 비동기라 방금 시작한 시도의 결과를
+  // 알 수 없다. 실제로 연결되면 다음 회전의 위쪽 분기가 잡아낸다.
   WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
-
-  if (WiFi.status() == WL_CONNECTED) {
-    diagnostics.recordWifiReconnect();
-    if (serialMenu.menuActive()) {
-      Serial.print("WiFi reconnected: ");
-      Serial.println(WiFi.localIP());
-    }
-  }
 }
 
 bool isPanTiltStop(const uint8_t* d, uint8_t len) {
@@ -2177,6 +2196,9 @@ void setup() {
   // 같은 이유로 메시지를 serialMenu.menuActive()로 게이팅한다.
 
   diagnostics.begin();
+  // raw 로그 줄 버퍼의 용량을 미리 잡아둔다. 이 한 줄로 바이트마다 일어나던 String
+  // 재할당이 전부 사라진다 - 이후로는 길이만 오갈 뿐 버퍼가 다시 할당되지 않는다.
+  diagRawLineBuf.reserve(DIAG_RAW_LINE_MAX_CHARS + 8);
   statusLed.begin(cfg.statusLedPin, cfg.statusLedActiveLow);
   resetModeCache();
   resetAutoPowerControl();
@@ -2198,6 +2220,9 @@ void setup() {
 }
 
 void loop() {
+  // millis()의 49.7일 래핑을 놓치지 않으려면 매 회전 봐야 한다 (Diagnostics::tickUptime).
+  diagnostics.tickUptime();
+
   serialMenu.poll();
   webConfigServer.poll();
   maintainWifi();

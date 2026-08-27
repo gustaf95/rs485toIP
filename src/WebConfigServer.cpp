@@ -4,6 +4,7 @@
 #include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include "BoardProfile.h"
+#include "FirmwareVersion.h"
 #include "Rs485PinValidation.h"
 #include "GatewayActions.h"
 
@@ -289,6 +290,14 @@ void WebConfigServer::handleStatus() {
   // 어느 보드용 펌웨어가 올라가 있는지. 핀 기본값과 허용 범위가 보드마다 다르므로,
   // 설정이 이상할 때 제일 먼저 확인해야 하는 값이다.
   body += "<tr><td>Board</td><td>" BOARD_NAME " (" BOARD_RS485_UART_LABEL ")</td></tr>";
+  // 어느 소스에서 나온 펌웨어인지. OTA로 올린 뒤 이 두 줄이 바뀌었는지가
+  // 새 펌웨어가 실제로 부팅했다는 증거다.
+  body += "<tr><td>Firmware</td><td>";
+  body += firmwareVersion();
+  body += "</td></tr>";
+  body += "<tr><td>Built</td><td>";
+  body += firmwareBuildTime();
+  body += "</td></tr>";
   body += "<tr><td>Wi-Fi (STA)</td><td>" + String(connected ? "Connected" : "Disconnected") + "</td></tr>";
   body += "<tr><td>ESP32 IP (STA)</td><td>" +
           String(connected ? WiFi.localIP().toString() : "Not assigned") + "</td></tr>";
@@ -727,7 +736,7 @@ void WebConfigServer::handleDebugGet() {
   body += "<h3>Last Packets</h3><pre>";
   bool any = false;
   for (uint8_t i = 0; i < _diagnostics.recentLogDepth(); i++) {
-    const String& entry = _diagnostics.recentLog()[i];
+    const String& entry = _diagnostics.recentLogAt(i);
     if (entry.length() == 0) continue;
     body += htmlEscape(entry) + "\n";
     any = true;
@@ -775,7 +784,7 @@ void WebConfigServer::handleDebugLiveGet() {
                 "the Debug page first if this stays empty.</p><pre>";
   bool any = false;
   for (uint8_t i = 0; i < _diagnostics.recentLogDepth(); i++) {
-    const String& entry = _diagnostics.recentLog()[i];
+    const String& entry = _diagnostics.recentLogAt(i);
     if (entry.length() == 0) continue;
     body += htmlEscape(entry) + "\n";
     any = true;
@@ -791,7 +800,7 @@ void WebConfigServer::handleDebugRawGet() {
                 "checksum - independent of Debug Mode.</p><pre>";
   bool any = false;
   for (uint8_t i = 0; i < _diagnostics.recentRawLogDepth(); i++) {
-    const String& entry = _diagnostics.recentRawLog()[i];
+    const String& entry = _diagnostics.recentRawLogAt(i);
     if (entry.length() == 0) continue;
     body += htmlEscape(entry) + "\n";
     any = true;
@@ -842,8 +851,16 @@ void WebConfigServer::handleUpdateGet() {
   body += "<table>";
   body += "<tr><td>Board</td><td>" BOARD_NAME "</td></tr>";
   // 새 펌웨어가 실제로 올라왔는지 확인하는 가장 확실한 값이다 - 업로드 후 재부팅되면
-  // 이 페이지로 돌아오므로, 이 시각이 바뀌었는지만 보면 된다.
-  body += "<tr><td>Build</td><td>" __DATE__ " " __TIME__ "</td></tr>";
+  // 이 페이지로 돌아오므로, 이 두 줄이 바뀌었는지만 보면 된다.
+  //
+  // __DATE__/__TIME__을 쓰지 않는 이유는 그게 **이 파일이 마지막으로 컴파일된 시각**이기
+  // 때문이다 - 다른 파일만 고쳐 빌드하면 바이너리는 새것인데 이 값은 옛날 그대로다.
+  body += "<tr><td>Firmware</td><td>";
+  body += firmwareVersion();
+  body += "</td></tr>";
+  body += "<tr><td>Build</td><td>";
+  body += firmwareBuildTime();
+  body += "</td></tr>";
   body += "<tr><td>Running slot</td><td>";
   body += running ? running->label : "?";
   body += "</td></tr>";

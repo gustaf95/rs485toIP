@@ -16,18 +16,35 @@ void Diagnostics::begin() {
   // 카운터/로그는 기본값(0, 빈 문자열)으로 시작한다.
 }
 
+// millis()는 32비트라 약 49.7일마다 0으로 감긴다. 감긴 순간은 "이번 값이 지난번보다
+// 작다"로만 알 수 있고, 그건 매 회전 들여다봐야 놓치지 않는다.
+void Diagnostics::tickUptime() {
+  uint32_t now = millis();
+  if (now < _lastMillis) _millisWraps++;
+  _lastMillis = now;
+}
+
 void Diagnostics::pushLog(const String& entry) {
-  for (int i = DIAG_LOG_DEPTH - 1; i > 0; i--) {
-    _recentLog[i] = _recentLog[i - 1];
-  }
-  _recentLog[0] = entry;
+  _recentLog[_logHead] = entry;
+  _logHead = (uint8_t)((_logHead + 1) % DIAG_LOG_DEPTH);
 }
 
 void Diagnostics::pushRawLog(const String& entry) {
-  for (int i = DIAG_RAW_LOG_DEPTH - 1; i > 0; i--) {
-    _recentRawLog[i] = _recentRawLog[i - 1];
-  }
-  _recentRawLog[0] = entry;
+  _recentRawLog[_rawLogHead] = entry;
+  _rawLogHead = (uint8_t)((_rawLogHead + 1) % DIAG_RAW_LOG_DEPTH);
+}
+
+// head는 다음에 쓸 칸이므로 최신은 head-1이다. index만큼 더 거슬러 올라간다.
+const String& Diagnostics::recentLogAt(uint8_t index) const {
+  uint8_t slot = (uint8_t)((_logHead + DIAG_LOG_DEPTH - 1 - (index % DIAG_LOG_DEPTH)) %
+                            DIAG_LOG_DEPTH);
+  return _recentLog[slot];
+}
+
+const String& Diagnostics::recentRawLogAt(uint8_t index) const {
+  uint8_t slot = (uint8_t)((_rawLogHead + DIAG_RAW_LOG_DEPTH - 1 - (index % DIAG_RAW_LOG_DEPTH)) %
+                            DIAG_RAW_LOG_DEPTH);
+  return _recentRawLog[slot];
 }
 
 void Diagnostics::recordRs485Rx(const uint8_t* data, uint8_t len) {
@@ -136,7 +153,10 @@ void Diagnostics::resetCounters() {
 }
 
 String Diagnostics::uptimeString() const {
-  unsigned long totalSeconds = millis() / 1000;
+  // 32비트 millis()만 쓰면 49.7일에 0으로 돌아가서, 가장 오래 켜져 있었다는 걸 알고
+  // 싶은 바로 그 시점에 거짓말을 한다. tickUptime()이 센 래핑 횟수를 얹어 64비트로 만든다.
+  uint64_t totalMs = ((uint64_t)_millisWraps << 32) | (uint32_t)millis();
+  unsigned long totalSeconds = (unsigned long)(totalMs / 1000);
   unsigned long days = totalSeconds / 86400;
   unsigned long hours = (totalSeconds % 86400) / 3600;
   unsigned long minutes = (totalSeconds % 3600) / 60;
