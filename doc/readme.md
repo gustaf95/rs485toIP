@@ -1392,6 +1392,7 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 | `GET /debug/live` | Live Packet Monitor | 1초 자동 새로고침. Serial과 달리 Debug Mode를 자동으로 켜지 않음 — `/debug`에서 먼저 켜야 함 |
 | `GET /debug/raw` | Raw Byte Monitor | 1초 자동 새로고침, 파싱/체크섬과 무관하게 항상 채워지는 별도 로그(13.3절) |
 | `POST /debug/test-command` | Send Test Command | Pelco-D/P Query Pan Position 프로브 전송 후 `/debug/raw`로 이동 |
+| `GET`/`POST /update` | (Serial 대응 없음) | 펌웨어 업데이트(OTA, 13.4절). 현재 빌드 시각/슬롯 표시 + `.bin` 업로드 폼 |
 | `GET`/`POST /factory-reset` | Factory Reset | 경고 문구 + 확인 버튼(POST 전용, 타이핑 확인 대신 실수로 못 누르게 별도 페이지+버튼 클릭) |
 | `GET /control` | (Serial 대응 없음) | PTZ 제어 패널(14절). 화면 원본은 `web/control.html`이고 빌드 시 gzip PROGMEM 배열로 구워진다 |
 | `GET /api/state` | | 제어 패널이 1초마다 폴링하는 상태 JSON |
@@ -1418,6 +1419,58 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 |---|---|
 | `Rs485PinValidation.h/.cpp` | GPIO 예약/입력전용/스트래핑 핀 검사 |
 | `GatewayActions.h/.cpp` | Factory Reset 시퀀스, Pelco-D/P 테스트 커맨드 패킷 생성, AP SSID/Password 적용(`applyApSettings()`) |
+
+### 13.4.1 펌웨어 업데이트 (OTA)
+
+`GET /update`가 현재 펌웨어 정보를, `POST /update`가 `.bin` 업로드를 받는다.
+
+**파티션은 바꾸지 않았다.** PlatformIO 기본값인 `default.csv`가 이미 OTA 2슬롯이다:
+
+```
+nvs,     data, nvs,   0x9000,   20K     설정 - app과 별개라 업데이트해도 안 날아간다
+otadata, data, ota,   0xe000,    8K     다음에 어느 슬롯으로 부팅할지
+app0,    app,  ota_0, 0x10000, 1280K    지금 도는 펌웨어 (약 877KB, 68%)
+app1,    app,  ota_1, 0x150000,1280K    새 펌웨어가 기록될 자리
+```
+
+파티션을 바꿔야 했다면 현장 장비를 USB로 한 번 완전히 지우고 다시 구워야 했을 텐데,
+그럴 필요가 없다. 설정도 NVS에 그대로 남는다 — `Storage::load()`가 옛 레이아웃을
+받아주므로(10.0.1절) 설정 항목이 늘어난 펌웨어로 올려도 Wi-Fi/카메라 IP를 다시 넣을
+필요가 없다.
+
+#### 칩이 맞는지 직접 검사한다
+
+**`Update` 라이브러리는 이걸 안 해준다.** `Updater.cpp`의 `_verifyHeader()`는 매직
+바이트 `0xE9` 하나만 보는데, 그 값은 ESP32 계열 전부가 같다. 그래서 클래식 ESP32용
+바이너리를 C3에 올려도 **검사를 전부 통과하고 기록이 끝난 뒤 부팅 파티션까지 바꾼다.**
+칩이 안 맞는다는 걸 부트로더가 알아채는 건 재부팅한 다음이고, 그때는 이미 부팅 루프다 —
+천장에 달린 장비를 내려 USB로 다시 구워야 한다.
+
+이 프로젝트는 보드를 둘 빌드하므로 두 `firmware.bin`이 나란히 놓인다. 헷갈릴 만한 게
+아니라 헷갈리게 되어 있어서, `verifyFirmwareHeader()`가 **flash에 쓰기 전에** 첫 조각의
+이미지 헤더를 직접 본다:
+
+| 오프셋 | 내용 | 검사 |
+| --- | --- | --- |
+| `[0]` | 매직 `0xE9` | 아니면 "ESP32 펌웨어 이미지가 아니다" |
+| `[12..13]` | chip id (LE) | 빌드의 `CONFIG_IDF_FIRMWARE_CHIP_ID`(C3 `0x0005`, 클래식 `0x0000`)와 다르면 거부 |
+
+거부되면 아무것도 기록되지 않고, 어느 보드용 이미지를 올렸는지가 화면에 그대로 나온다.
+
+#### 알아둘 것
+
+- **AP에서도 허용한다.** 제어 패널의 PTZ 조작은 `WebControl::controlAllowed()`가 AP를
+  막지만(13.6절과 같은 이유), 펌웨어 업로드는 막지 않는다 — 운영자의 결정이다. 설정
+  화면 전체가 그렇듯 로그인이 없으므로, **AP에 접속할 수 있는 사람은 펌웨어를 바꿀 수
+  있다.** AP 비밀번호가 유일한 문턱이다.
+- **업로드 중에는 RS485를 처리하지 않는다.** flash 쓰기 동안 `loop()`가 멈추므로,
+  움직이던 카메라는 계속 움직인다. 업로드 전에 Stop을 자동으로 보내지는 않는다.
+- **롤백은 없다.** `Update`가 크기와 MD5는 검증하지만 "부팅은 되는데 곧 죽는 펌웨어"는
+  못 거른다. 그런 이미지를 올리면 USB로 다시 구워야 한다. 업로드 후 페이지가 20초 뒤
+  자동으로 돌아오니, **Build 시각이 바뀌었는지 반드시 확인**한다 — 그게 새 펌웨어가
+  실제로 부팅했다는 유일한 증거다.
+- 진행률 표시는 없다. 설정 화면은 JS를 쓰지 않는다는 방침(13.2절)이라 평범한 폼
+  POST이고, 업로드가 끝날 때까지 브라우저가 대기 표시만 낸다.
 
 ### 13.5 알려진 제약
 

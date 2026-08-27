@@ -1,5 +1,8 @@
 #include "WebConfigServer.h"
+#include <Update.h>
 #include <WiFi.h>
+#include <esp_app_format.h>
+#include <esp_ota_ops.h>
 #include "BoardProfile.h"
 #include "Rs485PinValidation.h"
 #include "GatewayActions.h"
@@ -87,8 +90,58 @@ struct NavItem {
 const NavItem kNavItems[] = {
     {"/", "Status"},         {"/network", "Network"},   {"/rs485", "RS485"},
     {"/routing", "Routing"}, {"/counters", "Counters"}, {"/debug", "Debug"},
-    {"/factory-reset", "Factory Reset"},
+    {"/update", "Firmware"},  {"/factory-reset", "Factory Reset"},
 };
+
+// ---------------------------------------------------------------------------
+// 펌웨어 이미지 헤더 검사
+// ---------------------------------------------------------------------------
+// **Update 라이브러리는 이걸 안 해준다.** Updater.cpp의 _verifyHeader()는 매직
+// 바이트 0xE9 하나만 보는데, 그 값은 ESP32 계열 전부가 똑같다. 그래서 클래식
+// ESP32용 바이너리를 C3에 올려도 검사를 다 통과하고, 기록이 끝나면
+// esp_ota_set_boot_partition()까지 불린 뒤 재부팅한다. 그제서야 부트로더가 칩이
+// 안 맞는 걸 알아채고 거부하는데, 그때는 이미 부팅 루프다 - 천장에 달린 장비를
+// 내려서 USB로 다시 구워야 한다.
+//
+// 이 프로젝트는 보드를 둘(esp32dev / esp32c3_supermini) 빌드하므로 두 .bin이 같은
+// 폴더에 나란히 놓인다. 헷갈릴 만한 게 아니라 헷갈리게 되어 있다.
+//
+// ESP32 이미지 헤더(esp_image_header_t)의 앞부분:
+//   [0]      매직 0xE9
+//   [12..13] chip id (little endian)
+// 지금 빌드의 칩 id는 sdkconfig의 CONFIG_IDF_FIRMWARE_CHIP_ID에 들어 있다.
+const char* chipIdName(uint16_t id) {
+  switch (id) {
+    case ESP_CHIP_ID_ESP32: return "ESP32";
+    case ESP_CHIP_ID_ESP32S2: return "ESP32-S2";
+    case ESP_CHIP_ID_ESP32C3: return "ESP32-C3";
+    case ESP_CHIP_ID_ESP32S3: return "ESP32-S3";
+    default: return "unknown chip";
+  }
+}
+
+// 첫 조각의 앞 16바이트로 판정한다. 통과하지 못하면 *errorOut에 사유를 채운다.
+bool verifyFirmwareHeader(const uint8_t* data, size_t len, String* errorOut) {
+  if (len < 16) {
+    *errorOut = "File is too small to be a firmware image.";
+    return false;
+  }
+  if (data[0] != ESP_IMAGE_HEADER_MAGIC) {
+    *errorOut = "Not an ESP32 firmware image (first byte is 0x" + String(data[0], HEX) +
+                ", expected 0xE9). Pick firmware.bin, not the .elf or a merged/bootloader image.";
+    return false;
+  }
+
+  const uint16_t imageChip = (uint16_t)data[12] | ((uint16_t)data[13] << 8);
+  if (imageChip != CONFIG_IDF_FIRMWARE_CHIP_ID) {
+    *errorOut = String("This image is built for ") + chipIdName(imageChip) + ", but this device is " +
+                chipIdName(CONFIG_IDF_FIRMWARE_CHIP_ID) + " (" BOARD_NAME "). Flashing it would "
+                "leave the gateway unbootable, so it was rejected. Use the firmware.bin from the "
+                "matching PlatformIO environment.";
+    return false;
+  }
+  return true;
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -127,6 +180,11 @@ void WebConfigServer::begin() {
   _server.on("/debug/live", HTTP_GET, [this]() { handleDebugLiveGet(); });
   _server.on("/debug/raw", HTTP_GET, [this]() { handleDebugRawGet(); });
   _server.on("/debug/test-command", HTTP_POST, [this]() { handleDebugTestCommandPost(); });
+  _server.on("/update", HTTP_GET, [this]() { handleUpdateGet(); });
+  // 인자가 셋인 on(): 세 번째가 업로드 조각마다 불리는 콜백이고, 두 번째는 업로드가
+  // 다 끝난 뒤 응답을 낼 때 한 번 불린다.
+  _server.on("/update", HTTP_POST, [this]() { handleUpdateDone(); },
+             [this]() { handleUpdateUpload(); });
   _server.on("/factory-reset", HTTP_GET, [this]() { handleFactoryResetGet(); });
   _server.on("/factory-reset", HTTP_POST, [this]() { handleFactoryResetPost(); });
   // 제어 패널(/control, /api/*)은 같은 서버에 얹는다.
@@ -756,6 +814,140 @@ void WebConfigServer::handleDebugTestCommandPost() {
     _rs485.writePacket(packet, sizeof(packet));
   }
   redirectTo("/debug/raw");
+}
+
+// ---------------------------------------------------------------------------
+// Firmware Update (OTA)
+// ---------------------------------------------------------------------------
+// 파티션 테이블(default.csv)이 이미 app0/app1 두 슬롯을 갖고 있어서 파티션을 바꾸지
+// 않아도 된다. 지금 도는 쪽이 app0면 새 펌웨어는 app1에 기록되고, 다 받은 뒤에
+// otadata가 바뀌어 다음 부팅부터 새 쪽으로 넘어간다. 설정(NVS)은 별개 파티션이라
+// 업데이트해도 그대로 남는다 - Storage::load()가 옛 레이아웃도 받아주므로(10.0.1절)
+// 필드가 늘어난 펌웨어로 올려도 Wi-Fi/카메라 IP를 다시 넣을 필요가 없다.
+//
+// **AP에서도 허용한다** - 운영자의 결정이다. 웹 설정 화면 전체가 그렇듯 로그인이 없고
+// AP 비밀번호가 유일한 문턱이므로, AP에 들어올 수 있는 사람은 펌웨어를 바꿀 수 있다.
+// (제어 패널의 PTZ 조작은 WebControl::controlAllowed()가 AP를 막는데, 여기는 막지
+// 않는다는 뜻이다.)
+//
+// 진행률 표시는 없다. 설정 화면은 JS를 쓰지 않는다는 방침이라(13.2절) 평범한 폼
+// POST이고, 업로드가 끝날 때까지 브라우저가 대기 표시를 낸다.
+
+void WebConfigServer::handleUpdateGet() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+
+  String body;
+  body.reserve(1536);
+
+  body += "<table>";
+  body += "<tr><td>Board</td><td>" BOARD_NAME "</td></tr>";
+  // 새 펌웨어가 실제로 올라왔는지 확인하는 가장 확실한 값이다 - 업로드 후 재부팅되면
+  // 이 페이지로 돌아오므로, 이 시각이 바뀌었는지만 보면 된다.
+  body += "<tr><td>Build</td><td>" __DATE__ " " __TIME__ "</td></tr>";
+  body += "<tr><td>Running slot</td><td>";
+  body += running ? running->label : "?";
+  body += "</td></tr>";
+  body += "<tr><td>Firmware size</td><td>" + String(ESP.getSketchSize()) + " bytes</td></tr>";
+  body += "<tr><td>Space for update</td><td>" + String(ESP.getFreeSketchSpace()) + " bytes</td></tr>";
+  body += "</table>";
+
+  if (_updateError.length() > 0) {
+    body += "<p style=\"color:red\"><b>Update failed:</b> " + htmlEscape(_updateError) + "</p>";
+    _updateError = "";
+  }
+
+  body += "<form method=\"POST\" action=\"/update\" enctype=\"multipart/form-data\">";
+  body += "<label>Firmware image (.bin): "
+          "<input type=\"file\" name=\"firmware\" accept=\".bin\" required></label>";
+  body += "<button type=\"submit\">Upload and reboot</button>";
+  body += "</form>";
+
+  body += "<p><i>Upload the <b>firmware.bin</b> built for this board - an image for the other "
+          "board is rejected before anything is written. The upload takes a while and the page "
+          "will look idle until it finishes; do not close it. RS485 traffic is not processed "
+          "during the upload, so a camera that is moving will keep moving.</i></p>";
+
+  sendPage("Firmware Update", body);
+}
+
+// 업로드 조각마다 불린다. 여기서는 응답을 보낼 수 없으므로, 실패하면 사유만
+// _updateError에 담고 남은 조각은 조용히 흘려보낸다 (중간에 연결을 끊으면 브라우저가
+// 이유 없는 오류를 내서, 왜 거부됐는지 화면에 못 보여준다).
+void WebConfigServer::handleUpdateUpload() {
+  HTTPUpload& upload = _server.upload();
+
+  switch (upload.status) {
+    case UPLOAD_FILE_START:
+      _updateError = "";
+      _updateHeaderChecked = false;
+      // 업로드 크기를 미리 알 수 없으므로(Content-Length는 폼 전체 크기다) OTA 파티션
+      // 전체를 잡는다. 실제로 들어온 만큼만 쓰인다.
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        _updateError = Update.errorString();
+      }
+      break;
+
+    case UPLOAD_FILE_WRITE:
+      if (_updateError.length() > 0) break;  // 이미 실패 - 나머지는 버린다
+
+      // 첫 조각에서 한 번만 헤더를 본다. **쓰기 전에** 판정해야 의미가 있다.
+      if (!_updateHeaderChecked) {
+        _updateHeaderChecked = true;
+        if (!verifyFirmwareHeader(upload.buf, upload.currentSize, &_updateError)) {
+          Update.abort();
+          break;
+        }
+      }
+
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        _updateError = Update.errorString();
+        Update.abort();
+      }
+      break;
+
+    case UPLOAD_FILE_END:
+      if (_updateError.length() > 0) break;
+      // end(true) = 받은 길이를 최종 크기로 확정한다. 여기서 MD5/크기 검증과
+      // esp_ota_set_boot_partition()까지 끝난다.
+      if (!Update.end(true)) {
+        _updateError = Update.errorString();
+      }
+      break;
+
+    case UPLOAD_FILE_ABORTED:
+    default:
+      Update.abort();
+      if (_updateError.length() == 0) _updateError = "Upload aborted.";
+      break;
+  }
+}
+
+void WebConfigServer::handleUpdateDone() {
+  // 업로드가 끝난 뒤 한 번 불린다. 성공했으면 여기서 재부팅한다.
+  _server.sendHeader("Connection", "close");
+
+  if (_updateError.length() > 0) {
+    String body = "<p style=\"color:red\"><b>Update failed:</b> " + htmlEscape(_updateError) + "</p>";
+    // 실패 시 부팅 파티션은 건드려지지 않았다 - Update.end()가 성공해야만
+    // esp_ota_set_boot_partition()이 불리기 때문이다. 부분적으로 기록된 app1은
+    // 다음 업로드가 덮어쓴다.
+    body += "<p>The gateway is still running the old firmware and its settings are untouched.</p>";
+    body += "<p><a href=\"/update\">Back to Firmware Update</a></p>";
+    _updateError = "";
+    sendPage("Firmware Update", body);
+    return;
+  }
+
+  String body = "<p><b>Update complete.</b> Rebooting into the new firmware.</p>";
+  body += "<p>This page reloads in 20 seconds - check that the <b>Build</b> time above has "
+          "changed. If it never comes back, the new firmware is not booting and the board has "
+          "to be reflashed over USB.</p>";
+  sendPage("Firmware Update", body, /*refreshSeconds=*/20);
+
+  // 응답이 실제로 나갈 시간을 준 뒤 재부팅한다 - 곧바로 restart()하면 브라우저는
+  // 연결이 끊긴 것만 보고 성공했는지 알 수 없다.
+  delay(1500);
+  ESP.restart();
 }
 
 // ---------------------------------------------------------------------------

@@ -70,10 +70,25 @@ class WebConfigServer {
   void handleDebugTestCommandPost();
   void handleFactoryResetGet();
   void handleFactoryResetPost();
+
+  // ---- 펌웨어 업데이트 (OTA) ----
+  // 업로드는 WebServer가 두 콜백으로 나눠 부른다. handleUpdateUpload()가 조각마다
+  // 불려 flash에 쓰고, 다 받은 뒤에 handleUpdateDone()이 한 번 불려 응답을 낸다.
+  // **업로드 콜백에서는 응답을 보낼 수 없다** - 그래서 거기서 만난 실패 사유를
+  // _updateError에 담아 두고 Done 쪽에서 화면으로 낸다.
+  void handleUpdateGet();
+  void handleUpdateUpload();
+  void handleUpdateDone();
+
   void handleNotFound();
 
   // ---- 렌더링 도우미 ----
   String rs485PageBody(const String& error);
+
+  // 업로드 중 감지한 실패 사유. 비어 있으면 성공이다.
+  String _updateError;
+  // 이미지 헤더(칩 종류)를 확인했는지. 첫 조각에서 한 번만 본다.
+  bool _updateHeaderChecked = false;
   // 상단 메뉴. 현재 URI(_server.uri())를 보고 지금 화면을 표시한다.
   String navHtml();
   // refreshSeconds > 0이면 <meta http-equiv="refresh">를 넣어 폴링 화면(Counters,
