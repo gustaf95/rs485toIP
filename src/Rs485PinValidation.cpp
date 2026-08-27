@@ -1,25 +1,62 @@
 #include "Rs485PinValidation.h"
+
+#include "BoardProfile.h"
 #include "config.h"
 
 namespace {
-const int kMaxGpio = 39;
+const int kMaxGpio = BOARD_MAX_GPIO;
+
+// 범위 초과 메시지. 보드마다 상한이 달라(클래식 39, C3 21) 문자열을 그때그때
+// 조립하지 않고 한 번만 만든다.
+String rangeError() {
+  return String("Invalid GPIO number (0-") + kMaxGpio + ") on " BOARD_NAME ".";
+}
 }  // namespace
 
 bool isReservedGpio(uint8_t pin) {
-  return pin == 1 || pin == 3 || (pin >= 6 && pin <= 11);
+  return BOARD_GPIO_IS_RESERVED(pin);
 }
 
 bool isInputOnlyGpio(uint8_t pin) {
-  return pin >= 34 && pin <= 39;
+  return BOARD_GPIO_IS_INPUT_ONLY(pin);
 }
 
 bool isStrappingGpio(uint8_t pin) {
-  return pin == 0 || pin == 2 || pin == 5 || pin == 12 || pin == 15;
+  return BOARD_GPIO_IS_STRAPPING(pin);
+}
+
+bool isBootLogGpio(uint8_t pin) {
+  return BOARD_GPIO_IS_BOOT_LOG(pin);
+}
+
+const char* gpioWarning(uint8_t pin) {
+  // 부팅 로그 쪽을 먼저 본다 - 스트래핑은 "배선에 따라 부팅이 막힐 수 있다"는 조건부
+  // 경고인데, 부팅 로그는 RS485 버스가 매 리셋마다 확실히 오염된다는 무조건적인
+  // 이야기라 더 급하다.
+  if (isBootLogGpio(pin)) {
+    return "GPIO is the ROM bootloader's log output (UART0) - every reset dumps boot "
+           "messages onto this pin. Keep the RS485 driver disabled at boot (pull DE/RE low) "
+           "or pick another pin.";
+  }
+  if (isStrappingGpio(pin)) {
+    return "GPIO is a boot strapping pin - verify no external pull affects boot.";
+  }
+  return nullptr;
+}
+
+uint8_t gpioWarningFlags(uint8_t a, uint8_t b, uint8_t c) {
+  uint8_t flags = GPIO_WARN_NONE;
+  const uint8_t pins[3] = {a, b, c};
+  for (uint8_t pin : pins) {
+    if (isStrappingGpio(pin)) flags |= GPIO_WARN_STRAPPING;
+    if (isBootLogGpio(pin)) flags |= GPIO_WARN_BOOT_LOG;
+  }
+  return flags;
 }
 
 bool validateRs485Pin(int pin, bool requireOutput, uint8_t statusLedPin, String* errorOut) {
   if (pin < 0 || pin > kMaxGpio) {
-    *errorOut = "Invalid GPIO number (0-39).";
+    *errorOut = rangeError();
     return false;
   }
   if (pin == statusLedPin) {
@@ -27,7 +64,7 @@ bool validateRs485Pin(int pin, bool requireOutput, uint8_t statusLedPin, String*
     return false;
   }
   if (isReservedGpio((uint8_t)pin)) {
-    *errorOut = "GPIO" + String(pin) + " is reserved (UART0 console or internal SPI flash).";
+    *errorOut = "GPIO" + String(pin) + " is reserved (" BOARD_GPIO_RESERVED_REASON ").";
     return false;
   }
   if (requireOutput && isInputOnlyGpio((uint8_t)pin)) {
@@ -40,7 +77,7 @@ bool validateRs485Pin(int pin, bool requireOutput, uint8_t statusLedPin, String*
 bool validateStatusLedPin(int pin, uint8_t rs485RxPin, uint8_t rs485TxPin, uint8_t rs485DeRePin,
                            String* errorOut) {
   if (pin < 0 || pin > kMaxGpio) {
-    *errorOut = "Invalid GPIO number (0-39).";
+    *errorOut = rangeError();
     return false;
   }
   if (pin == rs485RxPin || pin == rs485TxPin || pin == rs485DeRePin) {
@@ -48,7 +85,7 @@ bool validateStatusLedPin(int pin, uint8_t rs485RxPin, uint8_t rs485TxPin, uint8
     return false;
   }
   if (isReservedGpio((uint8_t)pin)) {
-    *errorOut = "GPIO" + String(pin) + " is reserved (UART0 console or internal SPI flash).";
+    *errorOut = "GPIO" + String(pin) + " is reserved (" BOARD_GPIO_RESERVED_REASON ").";
     return false;
   }
   if (isInputOnlyGpio((uint8_t)pin)) {

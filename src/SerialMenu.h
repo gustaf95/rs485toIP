@@ -66,6 +66,7 @@ class SerialMenu {
     RS485_INPUT_PROTOCOL_CHOICE,
     RS485_PELCO_RESPONSE_CHOICE,
     RS485_STATUS_LED_PIN,
+    RS485_LED_POLARITY_CHOICE,
     RS485_INVERT_CHOICE,
     RESPONSE_MODE_CHOICE,
     ROUTING_SELECT_CAM,
@@ -114,6 +115,12 @@ class SerialMenu {
 
   // RS485 설정(Baudrate/RX/TX/DE-RE Pin) 변경 시 flash에 저장하고 즉시 UART를 재적용한다.
   void applyRs485Settings(const SystemConfig& cfg);
+
+  // 핀 입력 프롬프트(RX/TX/DE-RE/Status LED)의 공통 처리. 자세한 계약은 .cpp 주석 참고.
+  bool readPinPrompt(const String& line, Prompt retryPrompt, bool isStatusLed,
+                     bool requireOutput, uint8_t* pinOut);
+  // 거부 대상은 아니지만 알려야 하는 핀에 대한 경고를 찍는다 (없으면 아무것도 안 한다).
+  void printPinWarning(uint8_t pin);
 
   void printMainMenu();
   void printNetworkMenu();

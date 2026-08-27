@@ -1002,7 +1002,10 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
       // 요청만 받고 조용히 무시한다 (향후 작업, doc/pelcoD_command.md 10절 참고).
       // 애초에 Query가 기대하는 건 값이 실린 Extended Response지 General Response(ACK)가
       // 아니므로, 여기서 ACK를 돌려주는 것도 맞지 않는다 - false를 반환한다.
-      char reason[40];
+      // 48바이트다. 40으로 두면 접두사만 40자라 정작 알고 싶은 CMND2 값이 잘려 나간다
+      // (-Wformat-truncation이 잡아줬다). snprintf라 넘치지는 않지만, 값이 없는 진단
+      // 메시지는 남길 이유가 없다.
+      char reason[48];
       snprintf(reason, sizeof(reason), "Query Position not implemented (CMND2=0x%02X)", cmnd2);
       diagnostics.recordUnhandledPacket(camNumber, reason, rawPacket, rawLen);
       return false;
@@ -1614,8 +1617,10 @@ bool webExecuteCommand(uint8_t cam, const String& action, int p1, int p2, String
 // 두 번째가 중요하다. RS485 카메라 상태는 컨트롤러가 폴링해 줘야만 알 수 있어서, 물리
 // 컨트롤러가 꺼져 있으면 영영 관측되지 않는다 - 그럴듯한 기본값을 사실처럼 보여주느니
 // 모른다고 말하는 게 낫다.
-String webModeText(const CameraModeCache& c, uint8_t knownBit, const char* whenSet,
-                    const char* whenClear, uint8_t value, uint8_t setValue) {
+// String이 아니라 const char*를 돌려준다. 셋 다 상수 리터럴이라 담을 필요가 없는데,
+// String으로 받으면 카메라 한 대당 다섯 번, 폴링 한 번에 서른다섯 번 힙을 오간다.
+const char* webModeText(const CameraModeCache& c, uint8_t knownBit, const char* whenSet,
+                         const char* whenClear, uint8_t value, uint8_t setValue) {
   if (!(c.known & knownBit)) return "-";
   return (value == setValue) ? whenSet : whenClear;
 }
@@ -1624,8 +1629,14 @@ String webStateJson(bool controlAllowed) {
   SystemConfig& cfg = routingTable.get();
   bool staUp = (WiFi.status() == WL_CONNECTED);
 
-  String json = "{";
-  json += "\"control\":" + String(controlAllowed ? "true" : "false");
+  String json;
+  // 카메라 일곱 대 기준 완성 크기가 1.4KB 남짓이다. 미리 잡아두면 조립하는 동안
+  // 재할당이 한 번도 일어나지 않는다 - 이 함수는 제어 패널이 열려 있는 동안 1초에
+  // 한 번씩, 열린 탭 수만큼 통째로 다시 실행된다.
+  json.reserve(1600);
+  json += '{';
+  json += "\"control\":";
+  json += controlAllowed ? "true" : "false";
   json += ",\"staUp\":" + String(staUp ? "true" : "false");
   json += ",\"sta\":\"" + String(staUp ? WiFi.localIP().toString() : String("-")) + "\"";
   json += ",\"ap\":\"" + WiFi.softAPIP().toString() + "\"";
@@ -1657,19 +1668,37 @@ String webStateJson(bool controlAllowed) {
   for (uint8_t n = 1; n <= CAMERA_SLOT_COUNT; n++) {
     CameraSlot* slot = routingTable.camera(n);
     const CameraModeCache& c = modeCache[n - 1];
-    if (n > 1) json += ",";
-    json += "{\"n\":" + String(n);
-    json += ",\"path\":\"" + String(isOwnedSlot(slot) ? "ip" : "rs485") + "\"";
-    json += ",\"ip\":\"" + String(isOwnedSlot(slot) ? slot->ip.toIPAddress().toString() : String("-")) + "\"";
-    json += ",\"power\":\"" + webModeText(c, MODE_KNOWN_POWER, "ON", "STBY", c.power, 0x02) + "\"";
+    if (n > 1) json += ',';
+
+    // 조각마다 바로 이어붙인다. `json += "a" + String(x) + "b"` 꼴로 쓰면 한 줄마다
+    // 임시 String이 만들어졌다 버려지는데, 여기는 카메라 일곱 대를 도는 루프인 데다
+    // 브라우저가 열려 있는 동안 1초에 한 번씩 통째로 다시 실행되는 자리다.
+    const bool owned = isOwnedSlot(slot);
+    json += "{\"n\":";
+    json += (int)n;
+    json += ",\"path\":\"";
+    json += owned ? "ip" : "rs485";
+    json += "\",\"ip\":\"";
+    if (owned) {
+      json += slot->ip.toIPAddress().toString();
+    } else {
+      json += '-';
+    }
+    json += "\",\"power\":\"";
+    json += webModeText(c, MODE_KNOWN_POWER, "ON", "STBY", c.power, 0x02);
     // 컨트롤러 LCD와 같은 이름을 쓴다 - IRIS는 실제로는 AE 모드다.
-    json += ",\"iris\":\"" + webModeText(c, MODE_KNOWN_AE, "AUTO", "MANUAL", c.aeMode, 0x00) + "\"";
-    json += ",\"awb\":\"" + webModeText(c, MODE_KNOWN_WB, "AUTO", "MANUAL", c.wbMode, 0x00) + "\"";
-    json += ",\"focus\":\"" + webModeText(c, MODE_KNOWN_FOCUS, "AUTO", "MANUAL", c.focusMode, 0x02) + "\"";
-    json += ",\"blc\":\"" + webModeText(c, MODE_KNOWN_BACKLIGHT, "ON", "OFF", c.backlight, 0x02) + "\"";
+    json += "\",\"iris\":\"";
+    json += webModeText(c, MODE_KNOWN_AE, "AUTO", "MANUAL", c.aeMode, 0x00);
+    json += "\",\"awb\":\"";
+    json += webModeText(c, MODE_KNOWN_WB, "AUTO", "MANUAL", c.wbMode, 0x00);
+    json += "\",\"focus\":\"";
+    json += webModeText(c, MODE_KNOWN_FOCUS, "AUTO", "MANUAL", c.focusMode, 0x02);
+    json += "\",\"blc\":\"";
+    json += webModeText(c, MODE_KNOWN_BACKLIGHT, "ON", "OFF", c.backlight, 0x02);
     // 마지막 관측 이후 경과 시간(초). 값이 얼마나 오래된 것인지 화면에서 판단할 수 있게 한다.
-    json += ",\"age\":" + String(c.updatedMs == 0 ? -1 : (int)((millis() - c.updatedMs) / 1000));
-    json += "}";
+    json += "\",\"age\":";
+    json += (c.updatedMs == 0) ? -1 : (int)((millis() - c.updatedMs) / 1000);
+    json += '}';
   }
   json += "]}";
   return json;
@@ -2106,10 +2135,12 @@ WebConfigServer webConfigServer(routingTable, storage, diagnostics, rs485, statu
 
 void setup() {
   routingTable.applyDefaults();
-  if (storage.load(routingTable.get())) {
-    // 삭제된 기능(Raw Bridge / UART0 Shared Mode)의 값이 남아 있으면 되돌리고, 고친
-    // 경우에만 다시 저장한다 - 매 부팅마다 flash에 쓰지 않기 위함이다.
-    if (routingTable.sanitizeRemovedFeatures()) {
+  bool configUpgraded = false;
+  if (storage.load(routingTable.get(), &configUpgraded)) {
+    // 삭제된 기능(Raw Bridge / UART0 Shared Mode)의 값이 남아 있으면 되돌리고, 옛
+    // 레이아웃을 읽어 새 필드를 기본값으로 메웠으면 그것도 flash에 굳힌다. 어느 쪽도
+    // 아니면 저장하지 않는다 - 매 부팅마다 flash에 쓰지 않기 위함이다.
+    if (routingTable.sanitizeRemovedFeatures() || configUpgraded) {
       storage.save(routingTable.get());
     }
   } else {
@@ -2117,19 +2148,36 @@ void setup() {
   }
   SystemConfig& cfg = routingTable.get();
 
-  // UART0: USB Serial 메뉴/디버그 전용. RS485 쪽 속도(보통 9600)와 무관하게 최대한
+  // 콘솔: USB Serial 메뉴/디버그 전용. RS485 쪽 속도(보통 9600)와 무관하게 최대한
   // 빠르게 잡는다 - Debug Mode에서 패킷당 170자 가까이 찍는데, 9600bps면 그것만으로
   // 약 177ms가 걸리고 Serial.print()는 TX 버퍼가 차면 블로킹하므로 그동안 loop()가
   // 멈춰 RS485 수신 바이트를 놓친다. Stop 명령이 유실되면 카메라가 안 멈춘다.
   // 115200이면 같은 출력이 약 15ms로 줄어든다.
+  //
+  // ESP32-C3에서는 이 값이 무시된다 - 콘솔이 UART가 아니라 네이티브 USB(CDC)라
+  // 보드레이트라는 개념이 없고, 속도는 USB가 정한다. 대신 아래 setTxTimeoutMs()가
+  // 필요해진다.
   Serial.begin(SERIAL_CONSOLE_BAUD);
+#if ARDUINO_USB_CDC_ON_BOOT
+  // USB CDC의 송신 타임아웃을 기본값(100ms)에서 낮춘다.
+  //
+  // 호스트가 아예 안 붙어 있으면 arduino-esp32가 출력을 조용히 버리므로(HWCDC.cpp의
+  // flushTXBuffer) 블로킹이 없다. 문제는 터미널이 **열려 있는데 읽어가지 않는** 경우다
+  // - 그때 write()는 링버퍼가 빌 때까지 최대 이 시간만큼 loop()를 붙잡는다. C3는
+  // 싱글코어라 그동안 RS485 수신 처리도 같이 멈춘다.
+  //
+  // 20ms면 9600bps 기준 RS485 링버퍼(1024바이트 = 약 1초)에 한참 못 미쳐 프레임을
+  // 잃지 않는다. 대신 그런 상황에서는 콘솔 출력이 잘려 나가는데, 어차피 아무도 읽고
+  // 있지 않은 로그라 카메라 Stop 명령을 놓치는 것보다 훨씬 낫다.
+  Serial.setTxTimeoutMs(20);
+#endif
   delay(200);
   // 부팅 배너를 일부러 찍지 않는다 - 리셋 직후 Serial 메뉴가 잠금 해제(Enter 두 번)
   // 되기 전까지는 어떤 메시지도 안 보내는 게 의도다. connectWifi()/maintainWifi()도
   // 같은 이유로 메시지를 serialMenu.menuActive()로 게이팅한다.
 
   diagnostics.begin();
-  statusLed.begin(cfg.statusLedPin);
+  statusLed.begin(cfg.statusLedPin, cfg.statusLedActiveLow);
   resetModeCache();
   resetAutoPowerControl();
   // 부팅 직후 아직 아무 트래픽도 못 봤는데 millis()가 이미 10초를 넘긴 걸로 오판해

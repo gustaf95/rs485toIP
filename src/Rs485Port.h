@@ -4,8 +4,9 @@
 #include <HardwareSerial.h>
 #include "config.h"
 
-// RS485 송수신 및 DE/RE 방향 제어를 담당한다. 항상 독립된 UART2를 쓴다 - UART0는
-// USB Serial 콘솔 전용이다.
+// RS485 송수신 및 DE/RE 방향 제어를 담당한다. USB Serial 콘솔과 겹치지 않는 독립
+// UART를 쓴다 - 어느 번호인지는 보드마다 다르므로 BoardProfile.h가 정한다
+// (클래식은 UART2, C3는 UART가 두 개뿐이라 UART1).
 class Rs485Port {
  public:
   // invert=true면 ESP32 UART 하드웨어가 RX/TX 신호를 모두 반전시킨다 - A/B(D+/D-)가
@@ -26,8 +27,11 @@ class Rs485Port {
   void setTxEcho(TxEchoFn fn) { _txEcho = fn; }
 
  private:
-  HardwareSerial _uart2{2};
-  HardwareSerial* _serial = &_uart2;
+  // **번호를 여기 직접 적지 않는다.** C3처럼 UART가 두 개뿐인 칩에 2를 넘기면
+  // HardwareSerial::begin()이 조용히 return해버려서(BoardProfile.h 주석 참고)
+  // 컴파일도 부팅도 되는데 RS485만 죽는다.
+  HardwareSerial _uart{BOARD_RS485_UART_NUM};
+  HardwareSerial* _serial = &_uart;
   uint8_t _deRePin = RS485_DE_RE_PIN_DEFAULT;
   TxEchoFn _txEcho = nullptr;
 };

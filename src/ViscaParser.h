@@ -11,7 +11,7 @@ enum class ViscaParseResult {
   TIMEOUT_DISCARD    // 패킷 도중 timeout이 발생하여 폐기함
 };
 
-// UART2에서 바이트 단위로 들어오는 VISCA 스트림을 0xFF 종료 바이트 기준으로
+// RS485 UART에서 바이트 단위로 들어오는 VISCA 스트림을 0xFF 종료 바이트 기준으로
 // 하나의 패킷으로 조립한다. RS485 하드웨어 접근은 하지 않는다 (Rs485Port 담당).
 class ViscaParser {
  public:

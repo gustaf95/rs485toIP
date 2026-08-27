@@ -9,7 +9,7 @@ void performFactoryReset(RoutingTable& routing, Storage& storage, Rs485Port& rs4
   storage.save(cfg);
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
               cfg.rs485Invert);
-  statusLed.begin(cfg.statusLedPin);
+  statusLed.begin(cfg.statusLedPin, cfg.statusLedActiveLow);
 
   Serial.flush();
   delay(300);

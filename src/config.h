@@ -2,10 +2,14 @@
 
 #include <Arduino.h>
 
-// ---- RS485 / UART2 ----
-#define RS485_RX_PIN_DEFAULT 25
-#define RS485_TX_PIN_DEFAULT 26
-#define RS485_DE_RE_PIN_DEFAULT 27
+#include "BoardProfile.h"
+
+// ---- RS485 UART ----
+// 어느 UART를 쓰는지, 기본 핀이 몇 번인지는 보드마다 다르다 - BoardProfile.h가
+// 유일한 출처다. 여기서 숫자를 다시 적으면 보드를 바꿀 때 두 곳이 어긋난다.
+#define RS485_RX_PIN_DEFAULT BOARD_RS485_RX_PIN_DEFAULT
+#define RS485_TX_PIN_DEFAULT BOARD_RS485_TX_PIN_DEFAULT
+#define RS485_DE_RE_PIN_DEFAULT BOARD_RS485_DE_RE_PIN_DEFAULT
 #define RS485_BAUD_DEFAULT 9600
 
 // UART 신호 반전 여부의 초기 기본값. A/B(D+/D-)가 뒤집혀 결선된 배선에서는 이걸 켜야
@@ -14,9 +18,14 @@
 // 참고). 정상 결선(A/B 안 뒤집힘)이 기본 가정이라 false로 둔다.
 #define RS485_INVERT_DEFAULT false
 
-// USB 콘솔(UART0)의 속도. RS485 속도와 무관하며, Debug Mode 로그가 loop()를 오래
-// 붙잡지 않도록 최대한 빠르게 잡는다 (main.cpp setup()의 주석 참고). 이 값을 바꾸면
+// USB 콘솔의 속도. RS485 속도와 무관하며, Debug Mode 로그가 loop()를 오래 붙잡지
+// 않도록 최대한 빠르게 잡는다 (main.cpp setup()의 주석 참고). 이 값을 바꾸면
 // platformio.ini의 monitor_speed도 같이 맞춰야 한다.
+//
+// **ESP32-C3에서는 이 값이 아무 의미가 없다.** 콘솔이 UART0가 아니라 네이티브 USB
+// CDC라 보드레이트라는 개념 자체가 없고, 속도는 USB가 정한다. 그래도 상수를 지우지
+// 않는 이유는 클래식 보드에서는 여전히 필요하고, Serial.begin()에 넘길 값이 하나는
+// 있어야 하기 때문이다(CDC 쪽은 인자를 무시한다).
 #define SERIAL_CONSOLE_BAUD 115200
 
 // RS485 UART 수신 링버퍼 크기. 기본값(256)이면 Debug Mode 로그처럼 loop()를 잠시
@@ -27,7 +36,12 @@
 // ---- Status LED ----
 // RS485 Settings 화면(Serial/Web)에서 런타임에 바꿀 수 있다 - 이 값은 초기 기본값일
 // 뿐이다 (RoutingTable::applyDefaults() 참고).
-#define STATUS_LED_PIN_DEFAULT 13
+//
+// 극성도 설정 항목이다. ESP32-C3 Super Mini의 온보드 LED(GPIO8)가 액티브 로우라
+// 그 보드의 기본값은 true인데, 외부 LED를 다는 경우는 보통 액티브 하이다 - 어느
+// 쪽이 맞는지는 보드가 아니라 배선이 정하므로 컴파일 타임에 못 박지 않는다.
+#define STATUS_LED_PIN_DEFAULT BOARD_STATUS_LED_PIN_DEFAULT
+#define STATUS_LED_ACTIVE_LOW_DEFAULT BOARD_STATUS_LED_ACTIVE_LOW_DEFAULT
 
 // ---- VISCA framing ----
 #define VISCA_BUFFER_SIZE 128

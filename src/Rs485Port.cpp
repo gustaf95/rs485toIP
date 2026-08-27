@@ -1,5 +1,16 @@
 #include "Rs485Port.h"
 
+#include <soc/soc_caps.h>
+
+// BoardProfile.h가 고른 UART 번호가 이 칩에 실제로 존재하는지 빌드 타임에 못 박는다.
+// arduino-esp32는 존재하지 않는 번호를 받으면 begin()에서 log_e() 한 줄 남기고 조용히
+// return하므로(HardwareSerial.cpp), 이 검사가 없으면 "빌드 성공 / 부팅 성공 / RS485만
+// 무응답"이라는 최악의 실패 모드가 된다. 새 보드를 추가할 때 여기서 먼저 걸린다.
+static_assert(BOARD_RS485_UART_NUM < SOC_UART_NUM,
+              "BOARD_RS485_UART_NUM does not exist on this chip - fix BoardProfile.h");
+static_assert(BOARD_RS485_UART_NUM != 0,
+              "UART0 is the USB Serial console; RS485 needs its own UART");
+
 void Rs485Port::begin(uint32_t baudrate, uint8_t rxPin, uint8_t txPin, uint8_t deRePin,
                        bool invert) {
   _deRePin = deRePin;

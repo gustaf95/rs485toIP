@@ -23,6 +23,7 @@ void RoutingTable::applyDefaults() {
   // 삭제된 UART0 Shared Mode의 잔여 필드 - 자리만 유지한다 (RoutingTable.h 주석 참고).
   _config.rs485Uart0Shared = false;
   _config.statusLedPin = STATUS_LED_PIN_DEFAULT;
+  _config.statusLedActiveLow = STATUS_LED_ACTIVE_LOW_DEFAULT;
   _config.inputProtocol = InputProtocol::PELCO_D;
   // 기본값은 NONE(응답 안 함)이다. 이 게이트웨이가 놓이는 RS485 버스에는 컨트롤러가
   // 직접 제어하는 실물 카메라(EDIS ED-P 등)가 같이 물려 있고, 그 카메라들은 자기

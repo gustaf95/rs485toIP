@@ -139,6 +139,17 @@ struct SystemConfig {
   bool debugMode;
 
   CameraSlot cameras[CAMERA_SLOT_COUNT];  // index 0 = CAM1 ... index 6 = CAM7
+
+  // ---- 여기부터는 구조체 뒤에 덧붙은 필드다 ----
+  // Storage::load()는 저장된 블롭이 현재 구조체보다 **짧아도** 앞부분만 채우고 나머지는
+  // applyDefaults()가 넣어둔 값으로 남긴다(Storage.cpp 주석 참고). 그래서 새 설정을
+  // 추가할 때는 반드시 이 아래에 붙여야 한다 - 중간에 끼워 넣으면 옛 펌웨어가 저장한
+  // 바이트가 엉뚱한 필드로 읽힌다.
+
+  // 상태 LED가 액티브 로우인지(LOW = 켜짐). ESP32-C3 Super Mini의 온보드 LED(GPIO8)가
+  // 그렇고, 보통의 외부 LED는 아니다. 보드가 아니라 배선이 정하는 값이라 컴파일 타임
+  // 상수가 아니라 설정 항목이다 (기본값은 STATUS_LED_ACTIVE_LOW_DEFAULT).
+  bool statusLedActiveLow;
 };
 
 struct RoutedPacket {

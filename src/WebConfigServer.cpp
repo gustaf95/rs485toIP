@@ -1,12 +1,28 @@
 #include "WebConfigServer.h"
 #include <WiFi.h>
+#include "BoardProfile.h"
 #include "Rs485PinValidation.h"
 #include "GatewayActions.h"
 
 namespace {
+// 이스케이프할 문자가 하나라도 있는지 먼저 훑는다. 실제로는 대부분 없다 - SSID나
+// 카메라 이름에 &<>"가 들어가는 일은 드물다. 없으면 아래 htmlEscape()가 문자 단위
+// 조립 루프를 통째로 건너뛴다(반환은 String이라 복사 한 번은 남는다).
+bool needsEscaping(const String& in) {
+  for (size_t i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (c == '&' || c == '<' || c == '>' || c == '"') return true;
+  }
+  return false;
+}
+
 String htmlEscape(const String& in) {
+  if (!needsEscaping(in)) return in;
+
   String out;
-  out.reserve(in.length());
+  // 최악의 경우 한 글자가 6바이트(&quot;)가 되지만, 실제로 이스케이프될 문자는 극히
+  // 일부다. 여유분을 조금만 잡아 재할당 한 번으로 끝나게 한다.
+  out.reserve(in.length() + 16);
   for (size_t i = 0; i < in.length(); i++) {
     char c = in[i];
     switch (c) {
@@ -20,12 +36,45 @@ String htmlEscape(const String& in) {
   return out;
 }
 
-String selectOption(int value, int current, const String& label) {
-  String html = "<option value=\"" + String(value) + "\"";
-  if (value == current) html += " selected";
-  html += ">" + label + "</option>";
-  return html;
+// 예전에는 <option> 하나를 String으로 만들어 반환하고 호출부가 += 했다. 한 <select>에
+// 항목이 서너 개씩이고 화면당 대여섯 개의 <select>가 있어서, 그때마다 임시 String이
+// 만들어졌다 버려졌다. 호출부 버퍼에 직접 이어붙이면 그 임시 객체가 전부 사라진다.
+void appendOption(String& out, int value, int current, const String& label) {
+  out += "<option value=\"";
+  out += value;
+  out += '"';
+  if (value == current) out += " selected";
+  out += '>';
+  out += label;
+  out += "</option>";
 }
+
+// 길이를 컴파일 타임에 아는 상수 리터럴을 strlen 없이 그대로 소켓으로 보낸다.
+template <size_t N>
+void sendLiteral(WebServer& server, const char (&literal)[N]) {
+  server.sendContent(literal, N - 1);
+}
+
+// 페이지 머리말과 CSS. 매 요청마다 String에 열 번 넘게 += 해서 조립하던 것을 리터럴
+// 하나로 합쳤다 - 내용이 전혀 변하지 않으므로 힙을 거칠 이유가 없다.
+const char kPageHead[] =
+    "<!DOCTYPE html><html><head>"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
+
+const char kPageStyle[] =
+    "<style>"
+    "body{font-family:sans-serif;max-width:640px;margin:1em auto;padding:0 1em;line-height:1.5}"
+    "nav{display:flex;flex-wrap:wrap;align-items:center;gap:0.3em 0.8em;margin-bottom:1em}"
+    "nav a.here{font-weight:bold;color:#000;text-decoration:none}"
+    "nav a.panel{margin-left:auto;padding:4px 12px;border-radius:4px;"
+    "background:#0a72a8;color:#fff;text-decoration:none;font-weight:bold}"
+    "table{border-collapse:collapse;width:100%;margin:0.5em 0}"
+    "td,th{border:1px solid #ccc;padding:4px 8px;text-align:left}"
+    "label{display:block;margin:0.6em 0}"
+    "input,select{width:100%;max-width:320px;box-sizing:border-box;padding:4px}"
+    "button,input[type=submit]{padding:6px 12px;margin-top:0.5em}"
+    "pre{background:#f4f4f4;padding:0.6em;overflow-x:auto}"
+    "</style></head><body>";
 
 const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
 
@@ -105,7 +154,11 @@ void WebConfigServer::poll() {
 // 되어 왕복이 눈에 들어온다.
 String WebConfigServer::navHtml() {
   String uri = _server.uri();
-  String html = "<nav>";
+  String html;
+  // 항목 일곱 개 + 제어 패널 버튼이 약 300바이트다. 미리 잡아두면 += 하는 동안
+  // 재할당이 일어나지 않는다.
+  html.reserve(384);
+  html += "<nav>";
   for (const NavItem& item : kNavItems) {
     // 정확히 일치하거나, 하위 경로일 때 켠다 - /routing/cam이 Routing을,
     // /debug/live가 Debug를 가리켜야 한다. 접두사만 보면 안 되는 이유는 Status("/")다:
@@ -122,30 +175,40 @@ String WebConfigServer::navHtml() {
   return html;
 }
 
+// 페이지를 chunked로 흘려보낸다.
+//
+// 예전에는 완성된 페이지를 String 하나에 서른 번 남짓 += 해서 쌓은 뒤 send()에 넘겼다.
+// 그러면 (1) String이 커지며 여러 번 재할당·복사되고, (2) 그 사본과 호출부가 넘긴
+// bodyHtml이 한동안 동시에 힙에 올라간다. ESP32-C3는 WiFi/lwIP와 같은 메모리를 나눠
+// 쓰는 데다 싱글코어라, 이 재할당들이 그대로 여유 힙과 loop() 시간에서 빠진다.
+//
+// 조각으로 보내면 페이지 전체를 담는 String 자체가 없어진다 - 변하지 않는 머리말과
+// CSS는 힙을 거치지 않고 플래시에서 곧바로 소켓으로 나가고, 힙 최대 점유는 호출부가
+// 넘긴 bodyHtml 하나로 줄어든다.
+//
+// HTTP/1.0 클라이언트에는 WebServer가 알아서 chunked를 끄고 연결 종료로 끝을 알린다
+// (WebServer::_prepareHeader) - 브라우저는 전부 1.1이라 실제로는 항상 chunked다.
 void WebConfigServer::sendPage(const String& title, const String& bodyHtml, uint16_t refreshSeconds) {
-  String html;
-  html += "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
+  _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server.send(200, "text/html", "");
+
+  sendLiteral(_server, kPageHead);
   if (refreshSeconds > 0) {
-    html += "<meta http-equiv=\"refresh\" content=\"" + String(refreshSeconds) + "\">";
+    _server.sendContent("<meta http-equiv=\"refresh\" content=\"" + String(refreshSeconds) + "\">");
   }
-  html += "<title>" + htmlEscape(title) + "</title><style>";
-  html += "body{font-family:sans-serif;max-width:640px;margin:1em auto;padding:0 1em;line-height:1.5}";
-  html += "nav{display:flex;flex-wrap:wrap;align-items:center;gap:0.3em 0.8em;margin-bottom:1em}";
-  html += "nav a.here{font-weight:bold;color:#000;text-decoration:none}";
-  html += "nav a.panel{margin-left:auto;padding:4px 12px;border-radius:4px;"
-          "background:#0a72a8;color:#fff;text-decoration:none;font-weight:bold}";
-  html += "table{border-collapse:collapse;width:100%;margin:0.5em 0}";
-  html += "td,th{border:1px solid #ccc;padding:4px 8px;text-align:left}";
-  html += "label{display:block;margin:0.6em 0}";
-  html += "input,select{width:100%;max-width:320px;box-sizing:border-box;padding:4px}";
-  html += "button,input[type=submit]{padding:6px 12px;margin-top:0.5em}";
-  html += "pre{background:#f4f4f4;padding:0.6em;overflow-x:auto}";
-  html += "</style></head><body>";
-  html += navHtml();
-  html += "<h2>" + htmlEscape(title) + "</h2>";
-  html += bodyHtml;
-  html += "</body></html>";
-  _server.send(200, "text/html", html);
+
+  // 제목은 <title>과 <h2> 두 곳에 쓰이므로 한 번만 이스케이프한다.
+  const String escapedTitle = htmlEscape(title);
+  _server.sendContent("<title>" + escapedTitle + "</title>");
+  sendLiteral(_server, kPageStyle);
+  _server.sendContent(navHtml());
+  _server.sendContent("<h2>" + escapedTitle + "</h2>");
+  _server.sendContent(bodyHtml);
+  sendLiteral(_server, "</body></html>");
+
+  // 길이 0인 마지막 조각이 chunked 전송의 끝을 알린다. 빠뜨리면 브라우저가 페이지를
+  // 다 받고도 계속 기다린다.
+  _server.sendContent("");
 }
 
 void WebConfigServer::redirectTo(const String& path) {
@@ -161,8 +224,13 @@ void WebConfigServer::handleStatus() {
   SystemConfig& cfg = _routing.get();
   bool connected = WiFi.status() == WL_CONNECTED;
 
-  String body = "<table>";
+  String body;
+  body.reserve(512);
+  body += "<table>";
   body += "<tr><td>Mode</td><td>Gateway Running</td></tr>";
+  // 어느 보드용 펌웨어가 올라가 있는지. 핀 기본값과 허용 범위가 보드마다 다르므로,
+  // 설정이 이상할 때 제일 먼저 확인해야 하는 값이다.
+  body += "<tr><td>Board</td><td>" BOARD_NAME " (" BOARD_RS485_UART_LABEL ")</td></tr>";
   body += "<tr><td>Wi-Fi (STA)</td><td>" + String(connected ? "Connected" : "Disconnected") + "</td></tr>";
   body += "<tr><td>ESP32 IP (STA)</td><td>" +
           String(connected ? WiFi.localIP().toString() : "Not assigned") + "</td></tr>";
@@ -182,15 +250,43 @@ void WebConfigServer::handleNetworkGet() {
   SystemConfig& cfg = _routing.get();
   bool connected = WiFi.status() == WL_CONNECTED;
 
-  int found = WiFi.scanNetworks();
-  String scanOptions = "<option value=\"\">-- select scanned network --</option>";
-  if (found > 0) {
-    for (int i = 0; i < found; i++) {
-      String ssid = WiFi.SSID(i);
-      scanOptions += "<option value=\"" + htmlEscape(ssid) + "\">" + htmlEscape(ssid) + " (" +
+  // **동기 스캔을 쓰지 않는다.**
+  //
+  // WiFi.scanNetworks()는 기본적으로 스캔이 끝날 때까지 반환하지 않아 2~4초 동안
+  // loop()를 통째로 멈춘다. 그동안 RS485 수신 링버퍼(9600bps에서 1024바이트 = 약 1초분)가
+  // 넘쳐 프레임이 유실되고, 거기에 Stop 명령이 섞여 있으면 카메라가 계속 돈다 - 설정
+  // 화면을 여는 것만으로 운용 중인 게이트웨이가 명령을 흘리는 셈이었다. 싱글코어인
+  // ESP32-C3에서는 빠져나갈 구멍이 더 없다.
+  //
+  // 그래서 화면은 **직전 스캔 결과**를 그리고, 다 그린 다음 새 스캔을 비동기로 걸어둔다.
+  // 처음 열면 "scanning..."이 보이고, 새로고침하면 목록이 나온다. 목록이 한 박자 늦는
+  // 대신 게이트웨이가 명령을 흘리지 않는다.
+  String scanOptions;
+  scanOptions.reserve(640);
+  scanOptions += "<option value=\"\">-- select scanned network --</option>";
+
+  const int16_t scanState = WiFi.scanComplete();
+  if (scanState > 0) {
+    for (int i = 0; i < scanState; i++) {
+      // 같은 SSID를 value와 표시 텍스트 두 곳에 쓰므로 한 번만 이스케이프한다.
+      const String escaped = htmlEscape(WiFi.SSID(i));
+      scanOptions += "<option value=\"" + escaped + "\">" + escaped + " (" +
                       String(WiFi.RSSI(i)) + "dBm)</option>";
     }
-    WiFi.scanDelete();
+  } else if (scanState == WIFI_SCAN_RUNNING) {
+    scanOptions +=
+        "<option value=\"\" disabled>(scanning - reload this page in a few seconds)</option>";
+  }
+
+  // 다음 방문을 위해 새 스캔을 예약한다. async=true라 즉시 반환한다.
+  //
+  // 위에서 결과를 다 읽은 뒤에 부르는 것이 중요하다 - 새 스캔을 시작하면 arduino-esp32가
+  // 이전 결과 배열을 해제한다. 이미 돌고 있으면 건드리지 않는다(다시 걸면 진행 중인
+  // 스캔이 버려져 결과가 영영 안 나온다). scanDelete()를 부르지 않으므로 마지막 결과는
+  // 다음 스캔이 시작될 때까지 남는데, AP 스무 개 남짓이면 1~2KB 수준이라 감수한다 -
+  // 그게 없으면 "직전 결과를 보여준다"가 성립하지 않는다.
+  if (scanState != WIFI_SCAN_RUNNING) {
+    WiFi.scanNetworks(/*async=*/true);
   }
 
   String body = "<table>";
@@ -200,7 +296,8 @@ void WebConfigServer::handleNetworkGet() {
   body += "<tr><td>ESP32 IP (STA)</td><td>" +
           String(connected ? WiFi.localIP().toString() : "Not assigned") + "</td></tr>";
   body += "</table>";
-  body += "<p><i>Status LED pin is configured under RS485 Settings.</i></p>";
+  body += "<p><i>Status LED pin is configured under RS485 Settings. The scanned network list "
+          "comes from the previous scan - reload to pick up a fresh one.</i></p>";
 
   body += "<form method=\"POST\" action=\"/network\">";
   body += "<label>SSID (scanned): <select name=\"ssid_scan\">" + scanOptions + "</select></label>";
@@ -290,22 +387,35 @@ void WebConfigServer::handleNetworkRetry() {
 String WebConfigServer::rs485PageBody(const String& error) {
   SystemConfig& cfg = _routing.get();
   String body;
+  // 이 화면이 설정 페이지 중 가장 크다(<select> 여섯 개). 미리 잡아두면 조립하는 동안
+  // 재할당이 일어나지 않는다.
+  body.reserve(3072);
 
   if (error.length() > 0) {
     body += "<p style=\"color:red\"><b>Error:</b> " + htmlEscape(error) + "</p>";
   }
-  if (_server.hasArg("warn") && _server.arg("warn") == "strap") {
+  // 저장 직후 리다이렉트로 돌아올 때 붙는 경고 코드. 종류를 구분해서 보여준다 -
+  // C3에서 GPIO20/21을 고르면 리셋할 때마다 부팅 로그가 RS485 버스로 나가는데,
+  // 스트래핑 경고와 같은 문구로 뭉뚱그리면 그 얘기가 전달되지 않는다.
+  const String warn = _server.arg("warn");
+  if (warn.indexOf("bootlog") >= 0) {
+    body += "<p style=\"color:#b8860b\"><b>Warning:</b> one or more pins is the ROM bootloader's "
+            "log output (UART0). Every reset dumps boot messages onto that pin - keep the RS485 "
+            "driver disabled at boot (pull DE/RE low) or pick another pin.</p>";
+  }
+  if (warn.indexOf("strap") >= 0) {
     body += "<p style=\"color:#b8860b\"><b>Warning:</b> one or more pins is a boot strapping pin - "
             "verify no external pull affects boot.</p>";
   }
 
-  body += "<p><b>UART Port:</b> UART2 / Serial2</p>";
+  body += "<p><b>Board:</b> " BOARD_NAME " &nbsp;&middot;&nbsp; <b>RS485 UART:</b> "
+          BOARD_RS485_UART_LABEL "</p>";
 
   body += "<form method=\"POST\" action=\"/rs485\">";
 
   body += "<label>Baudrate: <select name=\"baudrate\">";
   for (uint8_t i = 0; i < 5; i++) {
-    body += selectOption((int)kBaudChoices[i], (int)cfg.rs485Baudrate, String(kBaudChoices[i]));
+    appendOption(body, (int)kBaudChoices[i], (int)cfg.rs485Baudrate, String(kBaudChoices[i]));
   }
   body += "</select></label>";
 
@@ -317,33 +427,39 @@ String WebConfigServer::rs485PageBody(const String& error) {
           String(cfg.rs485DeRePin) + "\"></label>";
 
   body += "<label>Signal Inversion: <select name=\"invert\">";
-  body += selectOption(1, cfg.rs485Invert ? 1 : 0, "Inverted (A/B swapped wiring)");
-  body += selectOption(0, cfg.rs485Invert ? 1 : 0, "Normal");
+  appendOption(body, 1, cfg.rs485Invert ? 1 : 0, "Inverted (A/B swapped wiring)");
+  appendOption(body, 0, cfg.rs485Invert ? 1 : 0, "Normal");
   body += "</select></label>";
 
   body += "<label>Input Protocol: <select name=\"input_protocol\">";
-  body += selectOption(0, (int)cfg.inputProtocol, "VISCA");
-  body += selectOption(1, (int)cfg.inputProtocol, "Pelco-D");
-  body += selectOption(2, (int)cfg.inputProtocol, "Pelco-P");
-  body += selectOption(3, (int)cfg.inputProtocol, "Pelco-D/P Autodetect");
+  appendOption(body, 0, (int)cfg.inputProtocol, "VISCA");
+  appendOption(body, 1, (int)cfg.inputProtocol, "Pelco-D");
+  appendOption(body, 2, (int)cfg.inputProtocol, "Pelco-P");
+  appendOption(body, 3, (int)cfg.inputProtocol, "Pelco-D/P Autodetect");
   body += "</select></label>";
 
   body += "<label>Pelco Response Mode: <select name=\"pelco_response\">";
-  body += selectOption(0, (int)cfg.pelcoResponseMode, "Respond (synthetic ACK)");
-  body += selectOption(1, (int)cfg.pelcoResponseMode, "No response");
+  appendOption(body, 0, (int)cfg.pelcoResponseMode, "Respond (synthetic ACK)");
+  appendOption(body, 1, (int)cfg.pelcoResponseMode, "No response");
   body += "</select></label>";
 
   body += "<label>Camera Response Mode: <select name=\"response_mode\">";
-  body += selectOption(0, (int)cfg.responseMode, "none - drop camera responses");
-  body += selectOption(1, (int)cfg.responseMode, "synthetic - fake ACK/Completion (VISCA input only)");
-  body += selectOption(2, (int)cfg.responseMode, "forward - camera bytes to RS485 as-is");
-  body += selectOption(3, (int)cfg.responseMode, "forward_rewrite - forward, rewrite address to 0x9n");
+  appendOption(body, 0, (int)cfg.responseMode, "none - drop camera responses");
+  appendOption(body, 1, (int)cfg.responseMode, "synthetic - fake ACK/Completion (VISCA input only)");
+  appendOption(body, 2, (int)cfg.responseMode, "forward - camera bytes to RS485 as-is");
+  appendOption(body, 3, (int)cfg.responseMode, "forward_rewrite - forward, rewrite address to 0x9n");
   body += "</select></label>";
   body += "<p><i>forward/forward_rewrite send RAW VISCA bytes. A Pelco-D/P controller cannot "
           "parse those - repackaging into a Pelco response is not implemented yet.</i></p>";
 
   body += "<label>Status LED Pin: <input type=\"number\" name=\"led_pin\" value=\"" +
           String(cfg.statusLedPin) + "\"></label>";
+
+  body += "<label>Status LED Logic: <select name=\"led_active_low\">";
+  appendOption(body, 0, cfg.statusLedActiveLow ? 1 : 0, "Active High (HIGH = on)");
+  appendOption(body, 1, cfg.statusLedActiveLow ? 1 : 0,
+               "Active Low (LOW = on) - ESP32-C3 Super Mini onboard LED (GPIO8)");
+  body += "</select></label>";
 
   body += "<button type=\"submit\">Save</button></form>";
 
@@ -375,8 +491,7 @@ void WebConfigServer::handleRs485Post() {
     return;
   }
 
-  bool anyStrapping = isStrappingGpio((uint8_t)rx) || isStrappingGpio((uint8_t)tx) ||
-                      isStrappingGpio((uint8_t)dere);
+  const uint8_t warnFlags = gpioWarningFlags((uint8_t)rx, (uint8_t)tx, (uint8_t)dere);
 
   cfg.rs485RxPin = (uint8_t)rx;
   cfg.rs485TxPin = (uint8_t)tx;
@@ -393,13 +508,21 @@ void WebConfigServer::handleRs485Post() {
   cfg.pelcoResponseMode = (PelcoResponseMode)_server.arg("pelco_response").toInt();
   cfg.responseMode = (ResponseMode)_server.arg("response_mode").toInt();
   cfg.statusLedPin = (uint8_t)ledPin;
+  cfg.statusLedActiveLow = (_server.arg("led_active_low").toInt() != 0);
 
   _storage.save(cfg);
   _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
                cfg.rs485Invert);
-  _statusLed.begin(cfg.statusLedPin);
+  _statusLed.begin(cfg.statusLedPin, cfg.statusLedActiveLow);
 
-  redirectTo(anyStrapping ? "/rs485?warn=strap" : "/rs485");
+  String target = "/rs485";
+  if (warnFlags != GPIO_WARN_NONE) {
+    target += "?warn=";
+    if (warnFlags & GPIO_WARN_BOOT_LOG) target += "bootlog";
+    if (warnFlags == (GPIO_WARN_BOOT_LOG | GPIO_WARN_STRAPPING)) target += "+";
+    if (warnFlags & GPIO_WARN_STRAPPING) target += "strap";
+  }
+  redirectTo(target);
 }
 
 // ---------------------------------------------------------------------------
@@ -444,15 +567,15 @@ void WebConfigServer::handleRoutingCamGet() {
           "\"></label>";
 
   body += "<label>Protocol: <select name=\"protocol\">";
-  body += selectOption(0, (int)slot->protocol, "IP_VISCA_RAW_UDP");
-  body += selectOption(1, (int)slot->protocol, "IP_VISCA_RAW_TCP");
-  body += selectOption(2, (int)slot->protocol, "SONY_VISCA_UDP");
+  appendOption(body, 0, (int)slot->protocol, "IP_VISCA_RAW_UDP");
+  appendOption(body, 1, (int)slot->protocol, "IP_VISCA_RAW_TCP");
+  appendOption(body, 2, (int)slot->protocol, "SONY_VISCA_UDP");
   body += "</select></label>";
 
   body += "<label>Address Mode: <select name=\"address_mode\">";
-  body += selectOption(0, (int)slot->addressMode, "rewrite_0x81");
-  body += selectOption(1, (int)slot->addressMode, "preserve");
-  body += selectOption(2, (int)slot->addressMode, "rewrite_by_cam");
+  appendOption(body, 0, (int)slot->addressMode, "rewrite_0x81");
+  appendOption(body, 1, (int)slot->addressMode, "preserve");
+  appendOption(body, 2, (int)slot->addressMode, "rewrite_by_cam");
   body += "</select></label>";
 
   body += "<label><input type=\"checkbox\" name=\"auto_power_control\"";

@@ -6,10 +6,17 @@ const unsigned long kRs485BlinkIntervalMs = 200;
 const uint8_t kRs485BlinkSteps = 4;  // ON->OFF->ON->OFF = 2회 깜박임
 }  // namespace
 
-void StatusLed::begin(uint8_t pin) {
+void StatusLed::write(bool on) {
+  digitalWrite(_pin, (on != _activeLow) ? HIGH : LOW);
+}
+
+void StatusLed::begin(uint8_t pin, bool activeLow) {
   _pin = pin;
+  _activeLow = activeLow;
+  _mode = Mode::WIFI_STATUS;
+  _ledOn = false;
   pinMode(_pin, OUTPUT);
-  digitalWrite(_pin, LOW);
+  write(false);
 }
 
 void StatusLed::notifyRs485Signal() {
@@ -17,7 +24,7 @@ void StatusLed::notifyRs485Signal() {
   _rs485BlinkStep = 0;
   _lastToggleMs = millis();
   _ledOn = true;
-  digitalWrite(_pin, HIGH);
+  write(true);
 }
 
 void StatusLed::update(bool wifiConnected) {
@@ -31,11 +38,10 @@ void StatusLed::update(bool wifiConnected) {
     if (_rs485BlinkStep >= kRs485BlinkSteps) {
       _mode = Mode::WIFI_STATUS;
       _ledOn = wifiConnected;
-      digitalWrite(_pin, _ledOn ? HIGH : LOW);
     } else {
       _ledOn = (_rs485BlinkStep % 2 == 0);  // 짝수 스텝 = ON, 홀수 스텝 = OFF
-      digitalWrite(_pin, _ledOn ? HIGH : LOW);
     }
+    write(_ledOn);
     return;
   }
 
@@ -43,11 +49,11 @@ void StatusLed::update(bool wifiConnected) {
   if (wifiConnected) {
     if (!_ledOn) {
       _ledOn = true;
-      digitalWrite(_pin, HIGH);
+      write(true);
     }
   } else if (now - _lastToggleMs >= kWifiBlinkIntervalMs) {
     _lastToggleMs = now;
     _ledOn = !_ledOn;
-    digitalWrite(_pin, _ledOn ? HIGH : LOW);
+    write(_ledOn);
   }
 }

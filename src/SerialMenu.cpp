@@ -1,5 +1,6 @@
 #include "SerialMenu.h"
 #include <WiFi.h>
+#include "BoardProfile.h"
 #include "Rs485PinValidation.h"
 #include "GatewayActions.h"
 
@@ -241,7 +242,15 @@ void SerialMenu::printNetworkMenu() {
 
 void SerialMenu::handleNetworkMenu(const String& line) {
   if (line == "1") {
-    Serial.println("Scanning Wi-Fi networks...");
+    // 여기만 동기 스캔을 그대로 둔다. 스캔이 끝날 때까지 2~4초 loop()가 멈추고 그동안
+    // RS485 수신 링버퍼가 넘칠 수 있는데(웹 설정 화면에서는 그래서 비동기로 바꿨다,
+    // WebConfigServer::handleNetworkGet 참고), 이 화면은 성격이 다르다 - 결과를 번호로
+    // 매겨 바로 다음 입력에서 고르게 하는 구조라 비동기로 바꾸면 "스캔 걸기"와
+    // "목록 보기"가 두 단계로 갈라진다. 콘솔 앞에 사람이 서서 설정하는 중이라는 것도
+    // 웹과 다르다 - 예배 중에 누가 폰으로 열 수 있는 화면이 아니다.
+    //
+    // 대신 버스가 잠깐 먹통이 된다는 사실은 숨기지 않고 알린다.
+    Serial.println("Scanning Wi-Fi networks... (RS485 input is not processed for a few seconds)");
     int found = WiFi.scanNetworks();
     _scanCount = (found > 0) ? (found > 30 ? 30 : (uint8_t)found) : 0;
 
@@ -385,7 +394,8 @@ void SerialMenu::printRs485Menu() {
   Serial.println(" 2. RS485 Settings");
   Serial.println("============================================================");
   Serial.println();
-  Serial.println("  UART Port        : UART2 / Serial2");
+  Serial.println("  Board            : " BOARD_NAME);
+  Serial.println("  UART Port        : " BOARD_RS485_UART_LABEL);
   Serial.print("  RX Pin           : GPIO");
   Serial.println(cfg.rs485RxPin);
   Serial.print("  TX Pin           : GPIO");
@@ -406,6 +416,9 @@ void SerialMenu::printRs485Menu() {
   Serial.println(responseModeName(cfg.responseMode));
   Serial.print("  Status LED Pin   : GPIO");
   Serial.println(cfg.statusLedPin);
+  Serial.print("  Status LED Logic : ");
+  Serial.println(cfg.statusLedActiveLow ? "Active Low (LOW = on, e.g. C3 Super Mini onboard LED)"
+                                        : "Active High (HIGH = on)");
   Serial.println();
   Serial.println("------------------------------------------------------------");
   Serial.println(" Options");
@@ -419,8 +432,51 @@ void SerialMenu::printRs485Menu() {
   Serial.println("  7. Set Status LED Pin");
   Serial.println("  8. Set Signal Inversion");
   Serial.println("  9. Set Camera Response Mode");
+  // 숫자가 다 찼다. 항목을 다시 번호 매기면 기존 사용자의 손에 익은 순서가 흐트러지고
+  // readme의 메뉴 캡처도 전부 어긋나므로, 새 항목만 문자로 붙인다.
+  Serial.println("  a. Set Status LED Polarity");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
+}
+
+// 핀 입력 프롬프트 네 벌(RX/TX/DE-RE/Status LED)이 글자 하나만 다른 채 반복하던 것 -
+// 빈 줄 취소, 검증, 실패 시 재입력 유도 - 을 한곳에 모은다. 네 벌로 흩어져 있으면
+// 규칙을 고칠 때(실제로 C3 포팅에서 전부 바뀌었다) 한 벌을 빠뜨리기 쉽다.
+//
+// true를 반환하면 *pinOut에 유효한 핀이 담긴 것이고, 호출부가 설정에 반영하면 된다.
+// false면 취소됐거나 재입력 프롬프트를 이미 걸어둔 상태라 호출부는 그냥 빠져나가면 된다.
+bool SerialMenu::readPinPrompt(const String& line, Prompt retryPrompt, bool isStatusLed,
+                                bool requireOutput, uint8_t* pinOut) {
+  SystemConfig& cfg = _routing.get();
+
+  if (line.length() == 0) {
+    Serial.println("Cancelled.");
+    printRs485Menu();
+    return false;
+  }
+
+  int pin = line.toInt();
+  String error;
+  bool ok = isStatusLed ? validateStatusLedPin(pin, cfg.rs485RxPin, cfg.rs485TxPin,
+                                                cfg.rs485DeRePin, &error)
+                        : validateRs485Pin(pin, requireOutput, cfg.statusLedPin, &error);
+  if (!ok) {
+    Serial.print(error);
+    Serial.print(" Try again (blank to cancel): ");
+    _prompt = retryPrompt;
+    return false;
+  }
+
+  *pinOut = (uint8_t)pin;
+  return true;
+}
+
+// 거부까지는 아니지만 알려야 하는 핀(스트래핑, C3의 부팅 로그 핀)에 대한 경고.
+void SerialMenu::printPinWarning(uint8_t pin) {
+  const char* warning = gpioWarning(pin);
+  if (!warning) return;
+  Serial.print("Warning: ");
+  Serial.println(warning);
 }
 
 void SerialMenu::applyRs485Settings(const SystemConfig& cfg) {
@@ -477,6 +533,11 @@ void SerialMenu::handleRs485Menu(const String& line) {
     Serial.println("cannot parse those - repackaging into a Pelco response is not implemented yet.");
     Serial.print("> ");
     _prompt = Prompt::RESPONSE_MODE_CHOICE;
+  } else if (line == "a" || line == "A") {
+    Serial.println("1. Active High (HIGH = on) - typical external LED to GND");
+    Serial.println("2. Active Low  (LOW = on)  - ESP32-C3 Super Mini onboard LED (GPIO8)");
+    Serial.print("> ");
+    _prompt = Prompt::RS485_LED_POLARITY_CHOICE;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -994,95 +1055,68 @@ void SerialMenu::handlePrompt(const String& line) {
       break;
     }
     case Prompt::RS485_RX_PIN: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printRs485Menu();
+      uint8_t pin;
+      if (!readPinPrompt(line, Prompt::RS485_RX_PIN, /*isStatusLed=*/false, /*requireOutput=*/false, &pin)) {
         break;
       }
-      int pin = line.toInt();
-      String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/false, cfg.statusLedPin, &error)) {
-        Serial.print(error);
-        Serial.print(" Try again (blank to cancel): ");
-        _prompt = Prompt::RS485_RX_PIN;
-        break;
-      }
-      cfg.rs485RxPin = (uint8_t)pin;
+      cfg.rs485RxPin = pin;
       applyRs485Settings(cfg);
-      if (isStrappingGpio((uint8_t)pin)) {
-        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
-      }
+      printPinWarning(pin);
       Serial.println("RX pin set and saved to flash.");
       printRs485Menu();
       break;
     }
     case Prompt::RS485_TX_PIN: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printRs485Menu();
+      uint8_t pin;
+      if (!readPinPrompt(line, Prompt::RS485_TX_PIN, /*isStatusLed=*/false, /*requireOutput=*/true, &pin)) {
         break;
       }
-      int pin = line.toInt();
-      String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/true, cfg.statusLedPin, &error)) {
-        Serial.print(error);
-        Serial.print(" Try again (blank to cancel): ");
-        _prompt = Prompt::RS485_TX_PIN;
-        break;
-      }
-      cfg.rs485TxPin = (uint8_t)pin;
+      cfg.rs485TxPin = pin;
       applyRs485Settings(cfg);
-      if (isStrappingGpio((uint8_t)pin)) {
-        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
-      }
+      printPinWarning(pin);
       Serial.println("TX pin set and saved to flash.");
       printRs485Menu();
       break;
     }
     case Prompt::RS485_DERE_PIN: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printRs485Menu();
+      uint8_t pin;
+      if (!readPinPrompt(line, Prompt::RS485_DERE_PIN, /*isStatusLed=*/false, /*requireOutput=*/true, &pin)) {
         break;
       }
-      int pin = line.toInt();
-      String error;
-      if (!validateRs485Pin(pin, /*requireOutput=*/true, cfg.statusLedPin, &error)) {
-        Serial.print(error);
-        Serial.print(" Try again (blank to cancel): ");
-        _prompt = Prompt::RS485_DERE_PIN;
-        break;
-      }
-      cfg.rs485DeRePin = (uint8_t)pin;
+      cfg.rs485DeRePin = pin;
       applyRs485Settings(cfg);
-      if (isStrappingGpio((uint8_t)pin)) {
-        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
-      }
+      printPinWarning(pin);
       Serial.println("DE/RE pin set and saved to flash.");
       printRs485Menu();
       break;
     }
     case Prompt::RS485_STATUS_LED_PIN: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printRs485Menu();
+      uint8_t pin;
+      if (!readPinPrompt(line, Prompt::RS485_STATUS_LED_PIN, /*isStatusLed=*/true,
+                         /*requireOutput=*/true, &pin)) {
         break;
       }
-      int pin = line.toInt();
-      String error;
-      if (!validateStatusLedPin(pin, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin, &error)) {
-        Serial.print(error);
-        Serial.print(" Try again (blank to cancel): ");
-        _prompt = Prompt::RS485_STATUS_LED_PIN;
-        break;
-      }
-      cfg.statusLedPin = (uint8_t)pin;
+      cfg.statusLedPin = pin;
       _storage.save(cfg);
-      _statusLed.begin(cfg.statusLedPin);
-      if (isStrappingGpio((uint8_t)pin)) {
-        Serial.println("Warning: GPIO is a boot strapping pin - verify no external pull affects boot.");
-      }
+      _statusLed.begin(cfg.statusLedPin, cfg.statusLedActiveLow);
+      printPinWarning(pin);
       Serial.println("Status LED pin set and saved to flash.");
+      printRs485Menu();
+      break;
+    }
+    case Prompt::RS485_LED_POLARITY_CHOICE: {
+      if (line == "1" || line == "2") {
+        cfg.statusLedActiveLow = (line == "2");
+        _storage.save(cfg);
+        // 극성만 바꿔도 LED를 다시 열어야 한다 - 안 그러면 다음 상태 변화가 올 때까지
+        // 이전 극성으로 켜둔 레벨이 그대로 남는다.
+        _statusLed.begin(cfg.statusLedPin, cfg.statusLedActiveLow);
+        Serial.print("Status LED polarity set to ");
+        Serial.print(cfg.statusLedActiveLow ? "Active Low" : "Active High");
+        Serial.println(" and saved to flash.");
+      } else {
+        Serial.println("Invalid choice.");
+      }
       printRs485Menu();
       break;
     }

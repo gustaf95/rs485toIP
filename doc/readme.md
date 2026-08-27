@@ -47,15 +47,65 @@ FoMaKo 매뉴얼 기준 확인된 제어 정보는 다음과 같다.
 
 ## 3. 하드웨어 구성
 
-## 3.1 ESP32 UART 사용
+## 3.1 지원 보드와 UART 사용
 
-| 용도                   | ESP32 인터페이스 | 권장 핀                    | 설명                              |
+두 보드를 지원한다. **기본 타겟은 ESP32-C3 Super Mini**이고, ESP32 클래식은 이미 설치된
+장비를 위해 남겨둔다.
+
+```bash
+pio run                  # ESP32-C3 Super Mini (기본)
+pio run -e esp32dev      # ESP32 클래식
+```
+
+빌드 산출물은 `.pio/`가 아니라 `C:/pio-build/<프로젝트해시>`에 쌓인다. **이 프로젝트 경로에 한글이 섞여
+있기 때문이다** — ESP32-C3용 RISC-V 링커가 non-ASCII 경로를 깨뜨려
+`ld.exe: cannot open map file ...`로 링크에 실패한다. 클래식용 Xtensa 툴체인은 같은
+경로에서 멀쩡히 링크되므로, 이 설정이 없으면 "클래식은 되는데 C3만 안 되는" 상태가 되어
+원인을 엉뚱한 데서 찾게 된다. 자세한 것은 `platformio.ini`의 `build_dir` 주석에 있다.
+
+보드마다 다른 사실(어느 UART를 쓰는지, 기본 GPIO, 예약 핀 목록)은 전부
+[BoardProfile.h](src/BoardProfile.h) 한 곳에 있다. **다른 파일에 GPIO 번호나 UART 번호를
+직접 적으면 안 된다** — 보드를 늘릴 때 반드시 한 곳을 빠뜨린다.
+
+### ESP32-C3 Super Mini (기본)
+
+| 용도                   | 인터페이스            | 기본 핀                   | 설명                          |
+| ---------------------- | --------------------- | ------------------------- | ----------------------------- |
+| USB Serial 디버그/설정 | 네이티브 USB (CDC)    | USB-C 커넥터              | 보드레이트 개념 없음          |
+| RS485 VISCA 수신/송신  | UART1 / Serial1       | RX = GPIO4, TX = GPIO5    | RS485 모듈 연결               |
+| RS485 방향 제어        | GPIO                  | GPIO6                     | DE, /RE 제어                  |
+| 상태 LED               | GPIO                  | GPIO8 (온보드, 액티브 로우) | 3.4절                        |
+
+- **C3의 UART는 0번과 1번 두 개뿐이다.** 클래식의 UART2를 그대로 쓰면 컴파일도 되고
+  부팅도 되는데 RS485만 조용히 죽는다 — arduino-esp32의 `HardwareSerial::begin()`이
+  없는 번호를 받으면 `log_e()` 한 줄 남기고 그냥 `return`하기 때문이다(기본 로그 레벨에서는
+  그마저 안 보인다). 그래서 [Rs485Port.cpp](src/Rs485Port.cpp)에 `static_assert`로 못 박아
+  뒀다 — 새 보드를 추가하면 런타임이 아니라 빌드에서 먼저 걸린다.
+- **USB 콘솔이 UART가 아니다.** Super Mini의 USB-C는 CH340 같은 브리지 칩이 아니라 칩에
+  내장된 USB Serial/JTAG다. `platformio.ini`의 `-DARDUINO_USB_CDC_ON_BOOT=1`이 없으면
+  `Serial`이 UART0(GPIO20/21)로 가버려서 USB를 꽂아도 메뉴가 나오지 않는다.
+  - 보드레이트는 무의미해진다. `monitor_speed`도 `SERIAL_CONSOLE_BAUD`도 무시되고 속도는
+    USB가 정한다. 아래 클래식 항목의 "9600bps면 loop()가 177ms 멈춘다" 문제가 그래서
+    C3에서는 대체로 사라진다.
+  - 대신 다른 구멍이 하나 있다. 터미널이 **열려 있는데 읽어가지 않으면** `Serial.write()`가
+    링버퍼가 빌 때까지 최대 100ms(기본값) `loop()`를 붙잡는다. C3는 싱글코어라 그동안
+    RS485 처리도 같이 멈추므로, `setup()`에서 `Serial.setTxTimeoutMs(20)`으로 상한을
+    낮춰뒀다. 호스트가 아예 안 붙어 있으면 arduino-esp32가 출력을 조용히 버리므로
+    블로킹이 없다.
+- **GPIO20/21에 RS485를 물리지 않는다.** ROM 부트로더가 USB CDC와 무관하게 GPIO21로
+  115200bps 부팅 로그를 뿜는다. 이미 ZU-EPC7000이 마스터로 도는 버스에 리셋할 때마다
+  쓰레기 바이트가 실린다. 거부하지는 않고 설정 화면에서 경고한다(12.2절).
+- **핀이 13개뿐이다.** Super Mini에서 실제로 뽑혀 나오는 것은 GPIO0~10, 20, 21이다.
+  11~17은 패키지 내장 SPI 플래시가, 18/19는 USB D-/D+가 쓴다.
+
+### ESP32 클래식 (esp32dev)
+
+| 용도                   | ESP32 인터페이스 | 기본 핀                    | 설명                              |
 | ---------------------- | ---------------- | -------------------------- | --------------------------------- |
 | USB Serial 디버그/설정 | UART0 / Serial   | TX0, RX0                   | PC와 연결, 메뉴 출력 및 설정 입력 (**115200bps**) |
 | RS485 VISCA 수신/송신  | UART2 / Serial2  | RX2 = GPIO25, TX2 = GPIO26 | RS485 모듈 연결                   |
 | RS485 방향 제어        | GPIO             | GPIO27                     | DE, /RE 제어                      |
-
-중요 사항:
+| 상태 LED               | GPIO             | GPIO13 (외부, 액티브 하이) | 3.4절                             |
 
 - UART0는 USB Serial 전용으로 사용한다. 속도는 RS485와 무관하게 **115200bps** 고정이다
   (`SERIAL_CONSOLE_BAUD`, `platformio.ini`의 `monitor_speed`와 같아야 함).
@@ -63,12 +113,15 @@ FoMaKo 매뉴얼 기준 확인된 제어 정보는 다음과 같다.
     그것만 약 177ms가 걸리고, `Serial.print()`는 TX 버퍼가 차면 블로킹하므로 그동안 `loop()`가
     멈춰 RS485 수신 바이트를 놓친다. 유실된 프레임에 Stop 명령이 섞여 있으면 카메라가 멈추지
     않는다. 115200이면 같은 출력이 약 15ms로 줄어든다.
-  - 함께, RS485 수신 링버퍼를 기본값 256에서 `RS485_RX_BUFFER_SIZE`(1024)로 키워
-    `loop()`가 잠시 멈춰도 바이트가 넘치지 않게 했다 (`Rs485Port::begin()`에서
-    `setRxBufferSize()`를 `begin()` 앞에 호출).
-- RS485는 UART2에 연결한다.
-- RS485를 TX0/RX0에 연결하지 않는다.
-- TX0/RX0를 RS485와 공유하면 업로드, 디버그, RS485 통신이 충돌할 수 있다.
+- RS485를 TX0/RX0에 연결하지 않는다. 공유하면 업로드, 디버그, RS485 통신이 충돌한다.
+
+### 두 보드 공통
+
+- RS485 수신 링버퍼를 기본값 256에서 `RS485_RX_BUFFER_SIZE`(1024)로 키워 `loop()`가 잠시
+  멈춰도 바이트가 넘치지 않게 했다 (`Rs485Port::begin()`에서 `setRxBufferSize()`를
+  `begin()` 앞에 호출). 9600bps 기준 약 1초의 정체를 견딘다 — **그보다 오래 `loop()`를
+  붙잡는 코드를 새로 넣으면 프레임이 유실된다.** 웹 설정 화면의 Wi-Fi 스캔을 비동기로
+  바꾼 것이 그 때문이다(12.1절).
 
 ## 3.2 RS485 모듈
 
@@ -87,16 +140,21 @@ ESP32는 3.3V TTL 로직이므로 RS485 모듈도 3.3V TTL 호환 제품을 사�
 
 ## 3.3 RS485 배선
 
-| RS485 모듈 핀 | ESP32 핀                 |
-| ------------- | ------------------------ |
-| VCC           | 3V3                      |
-| GND           | GND                      |
-| RO            | GPIO25 / RX2             |
-| DI            | GPIO26 / TX2             |
-| DE            | GPIO27                   |
-| /RE           | GPIO27                   |
-| A 또는 +      | PTZ 컨트롤러 RS485 A / + |
-| B 또는 -      | PTZ 컨트롤러 RS485 B / - |
+| RS485 모듈 핀 | ESP32-C3 Super Mini | ESP32 클래식             |
+| ------------- | ------------------- | ------------------------ |
+| VCC           | 3V3                 | 3V3                      |
+| GND           | GND                 | GND                      |
+| RO            | GPIO4               | GPIO25 / RX2             |
+| DI            | GPIO5               | GPIO26 / TX2             |
+| DE            | GPIO6               | GPIO27                   |
+| /RE           | GPIO6               | GPIO27                   |
+| A 또는 +      | PTZ 컨트롤러 RS485 A / + | PTZ 컨트롤러 RS485 A / + |
+| B 또는 -      | PTZ 컨트롤러 RS485 B / - | PTZ 컨트롤러 RS485 B / - |
+
+DE/RE 핀에 **외부 풀다운 저항(10k 정도)**을 다는 것을 권한다. 부팅이 끝나
+`Rs485Port::begin()`이 `pinMode(OUTPUT)`을 걸기 전까지 이 핀은 떠 있는데, 그 사이에
+트랜시버가 송신 모드로 들어가면 버스를 물어버린다. 이미 ZU-EPC7000이 마스터로 도는
+버스라 그 몇 밀리초가 실제로 문제가 된다.
 
 DE와 /RE를 하나의 GPIO에 묶어 사용하는 경우:
 
@@ -116,10 +174,20 @@ ESP32는 평소에는 RS485 명령을 들어야 하므로 Receive 상태를 유�
 
 ## 3.4 상태 LED
 
-| 항목      | 값                          |
-| --------- | --------------------------- |
-| GPIO      | GPIO2                       |
-| 용도      | Wi-Fi 연결 상태 / RS485 신호 수신 표시 |
+| 항목      | ESP32-C3 Super Mini            | ESP32 클래식        |
+| --------- | ------------------------------ | ------------------- |
+| 기본 GPIO | GPIO8 (보드 내장 파란 LED)     | GPIO13 (외부 LED)   |
+| 극성      | 액티브 로우 (LOW = 켜짐)       | 액티브 하이 (HIGH = 켜짐) |
+| 용도      | Wi-Fi 연결 상태 / RS485 신호 수신 표시 | 좌동          |
+
+핀과 **극성 둘 다** 런타임 설정이다 — RS485 Settings 화면(Serial의 `a`번, Web의
+"Status LED Logic")에서 바꿀 수 있다. 어느 쪽이 맞는지는 보드가 아니라 배선이 정하기
+때문이다: 보드 내장 LED는 보통 `3V3 → LED → GPIO`라 액티브 로우고, 외부 LED를
+`GPIO → LED → GND`로 달면 액티브 하이다. 극성을 반대로 두면 "안 켜진다"가 아니라
+**"계속 켜져 있고 가끔 꺼진다"**로 보이므로 증상만으로는 헷갈리기 쉽다.
+
+C3의 GPIO8은 부팅 스트래핑 핀이지만 이 배선에서는 안전하다 — LED를 통해 3V3으로
+끌려 올라가는데 그게 마침 정상 부팅 조건이다.
 
 동작 방식 (`StatusLed` 클래스, [StatusLed.h](src/StatusLed.h) / [StatusLed.cpp](src/StatusLed.cpp)):
 
@@ -131,7 +199,33 @@ ESP32는 평소에는 RS485 명령을 들어야 하므로 Receive 상태를 유�
 
 RS485 패킷 수신 표시가 Wi-Fi 상태 표시보다 우선하며, 2회 깜박임이 끝나면 그 시점의 Wi-Fi 연결 여부에 따라 원래 패턴(고정 ON 또는 1초 깜박임)으로 자동 복귀한다. `delay()`를 쓰지 않는 `millis()` 기반 non-blocking 상태 머신이라 RS485 수신/IP 전송을 막지 않는다.
 
-GPIO2는 상태 LED 전용으로 예약되어 있어, Serial 메뉴의 RS485 RX/TX/DE-RE Pin 설정에서 GPIO2를 입력하면 "reserved for the status LED" 오류로 거부된다.
+상태 LED에 배정된 핀은 RS485 쪽에서 다시 쓸 수 없다 — Serial/Web 메뉴의 RS485
+RX/TX/DE-RE Pin 설정에 그 번호를 넣으면 "reserved for the status LED" 오류로 거부된다.
+반대 방향도 마찬가지다.
+
+## 3.5 ESP32-C3 Super Mini 실전 주의사항
+
+빌드/설정이 아니라 **물건 자체**의 문제들이다. 미리 알아두지 않으면 배선이나 코드를
+의심하며 시간을 날린다.
+
+**안테나가 약하다.** Super Mini는 온보드 안테나의 임피던스 매칭 결함으로 수신 감도가
+나쁘다는 보고가 널리 있다. 개체 편차도 크다. Wi-Fi 게이트웨이가 본업인 장비라 이게
+제일 현실적인 위험이다 — **설치할 자리에서 먼저 실측하라.** 웹 설정 화면의 Wi-Fi 스캔
+목록에 뜨는 dBm 값이 그 자리의 실제 감도다. AP가 멀면 클래식 보드나 외장 안테나가 달린
+C3 모듈을 쓰는 편이 낫다.
+
+**부팅 루프가 돌면 플래시 모드를 낮춘다.** Super Mini의 ESP32-C3FH4는 패키지 내장
+플래시인데, `qio`에서 부팅이 안 되는 개체가 있다. `platformio.ini`의 해당 env에
+`board_build.flash_mode = dio`를 추가하면 된다.
+
+**업로드가 안 잡히면 수동으로 부트 모드에 넣는다.** BOOT 버튼(GPIO9)을 누른 채 USB를
+꽂거나 RST를 눌렀다 떼면 다운로드 모드로 들어간다. 네이티브 USB라 펌웨어가 USB를
+초기화하기 전에 죽으면 포트 자체가 사라지는데, 그때도 이 방법으로 복구된다.
+
+**핀이 13개다.** GPIO0~10, 20, 21만 뽑혀 나온다. 이 게이트웨이가 쓰는 것은 RS485 세 개
+(RX/TX/DE-RE)와 상태 LED 하나인데, LED는 온보드(GPIO8)를 쓰므로 실제로 배선할 핀은
+세 개뿐이다. 12.2.2절의 경고 대상(2/8/9 스트래핑, 20/21 부팅 로그)을 피하면
+0, 1, 3, 4, 5, 6, 7, 10이 남는다 — 기본값 4/5/6이 그중 하나다.
 
 ---
 
@@ -231,7 +325,7 @@ Broadcast도 슬롯별 Address Mode 설정을 그대로 적용한다.
 
 펌웨어는 다음 방식으로 VISCA 패킷을 처리한다.
 
-1. UART2에서 바이트를 계속 읽는다.
+1. RS485 UART(3.1절)에서 바이트를 계속 읽는다.
 2. 바이트를 수신 버퍼에 저장한다.
 3. `0xFF`를 만나면 하나의 VISCA 패킷으로 확정한다.
 4. 최소 길이와 시작 바이트를 검사한다.
@@ -363,11 +457,12 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | AP SSID               | Web Config Server AP 이름 | `RS485Gateway-XXXX` (XXXX=MAC 뒷자리 4자리)   |
 | AP Password           | Web Config Server AP 비밀번호 | `config.h`의 `AP_PASSWORD_DEFAULT`        |
 | RS485 Baudrate        | RS485 속도               | 9600                                           |
-| RS485 RX Pin          | UART2 RX                 | GPIO25                                         |
-| RS485 TX Pin          | UART2 TX                 | GPIO26                                         |
-| RS485 DE/RE Pin       | 방향 제어 핀             | GPIO27                                         |
+| RS485 RX Pin          | RS485 UART RX            | C3: GPIO4 / 클래식: GPIO25                     |
+| RS485 TX Pin          | RS485 UART TX            | C3: GPIO5 / 클래식: GPIO26                     |
+| RS485 DE/RE Pin       | 방향 제어 핀             | C3: GPIO6 / 클래식: GPIO27                     |
 | RS485 Signal Inversion | UART 신호 극성 반전     | off (정상 결선 가정, A/B 반전 배선이면 켜야 함) |
-| Status LED Pin        | 상태 LED 핀              | GPIO13                                         |
+| Status LED Pin        | 상태 LED 핀              | C3: GPIO8 / 클래식: GPIO13                     |
+| Status LED Polarity   | 액티브 로우 여부         | C3: Active Low / 클래식: Active High           |
 | Input Protocol        | RS485 입력 프로토콜      | Pelco-D                                        |
 | Pelco Response Mode   | Pelco ACK 합성 여부      | none (응답 안 함)                              |
 | Camera 1 IP           | CAM1 IP                  | empty                                          |
@@ -379,13 +474,38 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | Response Mode         | 카메라 응답 처리 모드    | none                                           |
 | Debug Mode            | 디버그 출력 여부         | off                                            |
 
+### 10.0.1 설정을 추가해도 기존 설정이 날아가지 않는다
+
+예전에는 `Storage::load()`가 `저장된 크기 == sizeof(SystemConfig) && version == 최신`을
+요구했다. 그래서 설정 항목을 **하나만 추가해도** 현장 장비의 Wi-Fi 비밀번호, 카메라 IP,
+RS485 핀이 전부 기본값으로 돌아갔다. "안 쓰는 필드라도 구조체에서 빼지 말 것"이라는
+제약(10.1절)도 여기서 나온 것이다.
+
+지금은 저장된 블롭이 현재 구조체보다 **짧아도** 받아준다:
+
+1. 호출자가 `applyDefaults()`로 기본값을 채운 상태에서 `load()`를 부른다.
+2. `load()`는 그 기본값 **위에** 저장된 바이트를 덮어쓴다.
+3. 옛 블롭에 없던 뒷부분은 자연히 기본값으로 남는다.
+4. 옛 버전을 읽었으면 `upgradedOut`으로 알려주고, `setup()`이 그때 한 번만 다시 저장해
+   flash를 최신 레이아웃으로 올린다.
+
+**그래서 새 필드는 반드시 `SystemConfig`의 맨 끝, `cameras[]` 뒤에 붙여야 한다.** 중간에
+끼워 넣으면 옛 펌웨어가 저장한 바이트가 한 칸씩 밀려 엉뚱한 필드로 읽히는데, 그건 설정이
+초기화되는 것보다 훨씬 나쁘다(잘못된 핀으로 조용히 동작한다). `Storage.cpp`의
+`static_assert`가 이걸 빌드 타임에 막는다.
+
+호환을 보장하는 범위는 **버전 10 이상**이다. 그 이전은 `CameraSlot` 중간에 필드가 들어간
+적이 있어(`autoPowerControl`) 접두사 관계가 성립하지 않으므로 거부하고 기본값으로 간다.
+새 펌웨어가 쓴 더 큰 블롭을 옛 펌웨어가 읽는 경우(다운그레이드)도 `Preferences::getBytes()`가
+0을 반환해 조용히 깨지지 않고 안전하게 기본값으로 떨어진다.
+
 ## 10.1 삭제된 기능의 잔여 값 처리
 
 **Raw Bridge**(Input Protocol의 다섯 번째 선택지)와 **UART0 Shared Mode**(RS485를 USB
 콘솔과 같은 UART에 물리던 모드)는 실제 운용에 쓰이지 않아 제거했다. 다만 **`SystemConfig`
-구조체에서는 해당 필드를 빼지 않았다** — 구조체 크기가 바뀌면 `Storage::load()`가 실패해
-저장된 Wi-Fi/카메라 IP가 전부 초기화되기 때문이다(4.2절과 같은 이유). `rs485Uart0Shared`
-필드는 자리만 남아 있고 아무도 읽지 않는다.
+구조체에서는 해당 필드를 빼지 않았다** — 필드를 빼면 뒤따르는 모든 필드의 위치가 밀려서
+옛 블롭이 엉뚱하게 읽힌다(10.0.1절). `rs485Uart0Shared` 필드는 자리만 남아 있고 아무도
+읽지 않는다.
 
 같은 이유로 **삭제된 기능이 쓰던 열거형 값도 재사용하지 않는다** — `ProtocolMode`의 `3`
 (`RAW_DATA_UDP`)과 `InputProtocol`의 `4`(`RAW_BRIDGE`)는 비워둔 채로 둔다. 새 항목에 그
@@ -398,7 +518,7 @@ Pan/Tilt/Zoom Stop 명령은 가능한 즉시 IP 카메라로 전송해야 한�
 | --- | --- | --- |
 | Input Protocol = Raw Bridge | Pelco-D | 그 입력을 해석할 코드가 없다. 기본값으로 되돌리는 게 안전하다 |
 | Camera Protocol = RAW_DATA_UDP | IP_VISCA_RAW_UDP + **IP 지움** | 그 슬롯의 IP는 카메라가 아니라 상대 게이트웨이 주소다. 그대로 두면 그쪽으로 VISCA를 쏘게 된다 |
-| UART0 Shared Mode = on | off + RS485 핀 기본값(25/26/27) | 그 모드가 강제해둔 GPIO3/1은 UART0 핀이라 메뉴로도 못 고친다(`validateRs485Pin()`이 거부) |
+| UART0 Shared Mode = on | off + 그 보드의 RS485 핀 기본값 | 그 모드가 강제해둔 GPIO3/1은 UART0 핀이라 메뉴로도 못 고친다(`validateRs485Pin()`이 거부) |
 
 ---
 
@@ -578,10 +698,11 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
  2. RS485 Settings
 ============================================================
 
-  UART Port        : UART2 / Serial2
-  RX Pin           : GPIO25
-  TX Pin           : GPIO26
-  DE/RE Pin        : GPIO27
+  Board            : ESP32-C3 Super Mini
+  UART Port        : UART1 / Serial1
+  RX Pin           : GPIO4
+  TX Pin           : GPIO5
+  DE/RE Pin        : GPIO6
   Baudrate         : 9600
   Format           : 8N1
   Signal Inversion : Normal
@@ -589,7 +710,8 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   Input Protocol   : Pelco-D
   Pelco Response   : No response
   Camera Response  : none (drop camera responses)
-  Status LED Pin   : GPIO13
+  Status LED Pin   : GPIO8
+  Status LED Logic : Active Low (LOW = on, e.g. C3 Super Mini onboard LED)
 
 ------------------------------------------------------------
  Options
@@ -603,10 +725,14 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   7. Set Status LED Pin
   8. Set Signal Inversion
   9. Set Camera Response Mode
+  a. Set Status LED Polarity
   0. Back to Main Menu
 ```
 
-Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART2에 재적용되며,
+(위는 기본 타겟인 ESP32-C3 Super Mini의 값이다. `-e esp32dev`로 빌드하면 `Board`,
+`UART Port`, 핀 기본값이 클래식 것으로 바뀐다 — 3.1절 참고.)
+
+Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART에 재적용되며,
 별도의 저장 메뉴는 없다.
 
 "8. Set Signal Inversion"은 UART 신호의 극성을 뒤집는다. 기본값은 **Normal**이다 — 정상
@@ -879,14 +1005,41 @@ Baudrate 선택값:
 5. 115200
 ```
 
-RX/TX/DE-RE 핀 입력 시 유효성 검사:
+### 12.2.2 핀 입력 유효성 검사
+
+RX/TX/DE-RE와 Status LED 핀 입력에 같은 규칙이 적용된다. 규칙은
+[Rs485PinValidation.cpp](src/Rs485PinValidation.cpp)에 한 벌만 있고 Serial 메뉴와 웹
+설정 화면이 공유한다 — 한쪽만 고치면 두 UI가 서로 다른 핀을 허용/거부하게 된다.
+
+**두 보드의 제약이 거의 겹치지 않는다.** 실제 목록은 [BoardProfile.h](src/BoardProfile.h)에 있다.
+
+| 구분 | ESP32-C3 Super Mini | ESP32 클래식 |
+| --- | --- | --- |
+| 유효 범위 | GPIO0~21 | GPIO0~39 |
+| 사용 불가 | 11~17 (내장 SPI 플래시), 18~19 (USB D-/D+) | 1, 3 (UART0 콘솔), 6~11 (내장 SPI 플래시) |
+| 입력 전용 (TX/DE-RE 불가) | 없음 | 34~39 |
+| 스트래핑 경고 | 2, 8, 9 | 0, 2, 5, 12, 15 |
+| 부팅 로그 경고 | 20, 21 | 없음 (해당 핀이 이미 사용 불가) |
 
 - 아무 값도 입력하지 않고 Enter만 누르면 변경 없이 취소된다.
-- **GPIO1, 3** : UART0(USB Serial 메뉴 전용)이라 사용 불가
-- **GPIO6~11** : 보드 내장 SPI Flash 전용이라 사용 불가
-- **GPIO34~39** : 입력 전용이라 RX는 가능하지만 TX/DE-RE(출력 필요)로는 사용 불가
-- **GPIO0, 2, 5, 12, 15** (부팅 스트래핑 핀) : 사용은 가능하나 외부 배선에 따라 부팅에 영향을 줄 수 있어 설정 시 경고 메시지가 출력됨
-- 위 조건에 걸리면 에러 메시지와 함께 다시 입력받으며, 이때도 빈 입력으로 취소할 수 있다.
+- 상태 LED에 배정된 핀은 RS485로 쓸 수 없고, 그 반대도 마찬가지다.
+- **사용 불가**에 걸리면 에러 메시지와 함께 다시 입력받는다. 이때도 빈 입력으로 취소할 수 있다.
+- **경고**는 거부가 아니다. 값은 저장되고 메시지만 표시된다.
+  - *스트래핑* : 외부 배선에 따라 부팅 모드가 바뀔 수 있다.
+  - *부팅 로그* (C3의 GPIO20/21) : ROM 부트로더가 USB CDC와 무관하게 GPIO21로 115200bps
+    부팅 로그를 뿜는다. 여기에 RS485 트랜시버를 물리면 **리셋할 때마다 버스에 쓰레기
+    바이트가 실린다.** 핀이 13개뿐인 보드라 봉인하는 대신 경고로 남겼다 — DE/RE에 외부
+    풀다운을 달아 부팅 중 드라이버를 꺼두면 실제로는 문제가 없다.
+
+### 12.2.3 Status LED Polarity ("a. Set Status LED Polarity")
+
+```text
+1. Active High (HIGH = on) - typical external LED to GND
+2. Active Low  (LOW = on)  - ESP32-C3 Super Mini onboard LED (GPIO8)
+```
+
+3.4절 참고. 숫자 항목이 이미 1~9로 다 차서 이 항목만 문자 `a`를 쓴다 — 기존 항목을
+다시 번호 매기면 손에 익은 순서와 이 문서의 메뉴 캡처가 전부 어긋난다.
 
 ## 12.3 Routing Table
 
@@ -1185,6 +1338,13 @@ USB Serial에 물리적으로 접근할 수 없는 상황을 위한 두 번째 �
 쓰며, HTML은 파일시스템 없이 `WebConfigServer.cpp` 안에 C++ 문자열로 직접
 들어있다(SerialMenu.cpp가 화면 전체를 한 파일에 담는 것과 같은 방식).
 
+페이지는 `sendPage()`가 **chunked로 흘려보낸다.** 완성된 페이지를 String 하나에 쌓아
+`send()`에 넘기면 조립하는 동안 그 String이 여러 번 재할당되고, 완성본과 호출부의
+`bodyHtml`이 한동안 동시에 힙에 올라간다. 조각으로 보내면 페이지 전체를 담는 String
+자체가 없어지고, 변하지 않는 머리말·CSS는 힙을 거치지 않고 플래시에서 곧바로 소켓으로
+나간다. ESP32-C3는 Wi-Fi/lwIP와 같은 메모리를 나눠 쓰는 데다 싱글코어라 이 차이가
+여유 힙과 `loop()` 시간에 그대로 반영된다.
+
 ### 13.1 AP+STA 동시 운용
 
 `connectWifi()`가 `WiFi.mode(WIFI_AP_STA)`로 STA(평소 Wi-Fi)와 AP를 동시에
@@ -1213,9 +1373,9 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 
 | 경로 | Serial 대응 | 비고 |
 |---|---|---|
-| `GET /` | Main Menu 상태 블록 | Wi-Fi(STA/AP) 상태, Debug Mode, 각 페이지 링크 |
-| `GET`/`POST /network` | Network Settings | SSID(스캔 드롭다운 + 직접 입력), Password(빈 칸 = 기존 유지), DHCP, Static IP/Gateway/Subnet, Retry 버튼, AP SSID/Password(별도 폼, `POST /network/ap`) |
-| `GET`/`POST /rs485` | RS485 Settings | Baudrate, Signal Inversion, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode, Camera Response Mode |
+| `GET /` | Main Menu 상태 블록 | Board(어느 보드용 펌웨어인지), Wi-Fi(STA/AP) 상태, Debug Mode, 각 페이지 링크 |
+| `GET`/`POST /network` | Network Settings | SSID(**직전 스캔** 드롭다운 + 직접 입력, 13.5절), Password(빈 칸 = 기존 유지), DHCP, Static IP/Gateway/Subnet, Retry 버튼, AP SSID/Password(별도 폼, `POST /network/ap`) |
+| `GET`/`POST /rs485` | RS485 Settings | Board/UART 표시, Baudrate, Signal Inversion, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode, Camera Response Mode, Status LED Pin/Logic |
 | `GET /routing` | Routing Table | CAM1~7 목록 |
 | `GET`/`POST /routing/cam?n=N` | Camera Detail | IP(빈 칸 = 삭제)/Port/Protocol/Address Mode/Auto Power Control |
 | `GET /counters` | Counters | 2초 자동 새로고침 |
@@ -1252,8 +1412,19 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 
 ### 13.5 알려진 제약
 
-- Wi-Fi 스캔(`/network`)은 GET마다 `WiFi.scanNetworks()`를 동기 호출한다 —
-  Serial의 스캔과 동일한 방식으로, 페이지 로딩에 1~2초 걸릴 수 있다.
+- Wi-Fi 스캔(`/network`)은 **직전 스캔 결과**를 보여준다. 처음 열면
+  `(scanning - reload this page in a few seconds)`가 뜨고, 새로고침해야 목록이 나온다.
+  - 예전에는 GET마다 `WiFi.scanNetworks()`를 동기 호출했는데, 그러면 스캔이 끝날 때까지
+    2~4초 `loop()`가 멈춘다. RS485 수신 링버퍼가 9600bps 기준 약 1초분이라 그 사이
+    프레임이 유실되고, 거기에 Stop 명령이 섞여 있으면 **카메라가 계속 돈다.** 설정
+    화면을 여는 것만으로 운용 중인 게이트웨이가 명령을 흘리는 셈이었다 — 예배 중에
+    누가 폰으로 열 수 있는 화면이라 실제로 일어날 수 있는 일이다.
+  - Serial 메뉴의 스캔은 여전히 동기다(12.1절). 결과를 번호로 매겨 바로 다음 입력에서
+    고르는 구조라 비동기로 바꾸면 두 단계로 갈라지고, 콘솔 앞에 사람이 서서 설정하는
+    중이라는 점도 다르다. 대신 "RS485 input is not processed for a few seconds"를
+    함께 출력해 숨기지 않는다.
+  - 마지막 스캔 결과는 다음 스캔이 시작될 때까지 메모리에 남는다(AP 스무 개 남짓이면
+    1~2KB). `scanDelete()`를 부르면 "직전 결과를 보여준다"가 성립하지 않는다.
 - "Retry Wi-Fi Connection"은 최대 `WIFI_CONNECT_TIMEOUT_MS`(15초)까지 요청을
   블로킹한다 — Serial의 "4. Retry Wi-Fi Connection"과 동일한 동작.
 - Response Mode(VISCA `NONE`/`SYNTHETIC`/`FORWARD`/`FORWARD_REWRITE`)는 Serial
@@ -1321,6 +1492,7 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
 /src
   main.cpp
   config.h
+  BoardProfile.h        보드마다 다른 하드웨어 사실(UART 번호, 기본 핀, 예약 핀) 전부
   ViscaParser.h / .cpp
   PelcoDParser.h / .cpp
   PelcoPParser.h / .cpp
@@ -1342,21 +1514,22 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
 
 | 모듈                | 역할                                                    |
 | ------------------- | ------------------------------------------------------- |
+| BoardProfile        | 보드 의존 상수의 유일한 출처 — ESP32 클래식 / ESP32-C3 (3.1절) |
 | ViscaParser         | `0xFF` 기준 VISCA 패킷 파싱                              |
 | PelcoDParser        | Pelco-D 고정 7바이트 프레임 파싱(합산 체크섬)            |
 | PelcoPParser        | Pelco-P 고정 8바이트 프레임 파싱(XOR 체크섬)             |
-| Rs485Port           | UART2 및 DE/RE 제어                                      |
+| Rs485Port           | RS485 UART(클래식 UART2 / C3 UART1) 및 DE/RE 제어         |
 | IpViscaClient       | Raw UDP/TCP IP VISCA 전송 (UDP 소켓은 로컬 포트 5678에 bind) |
 | SonyViscaClient     | Sony VISCA over IP framing 및 전송                       |
 | RoutingTable        | 카메라 1~7 IP/Port/Protocol/Address Mode 관리            |
 | SerialMenu          | USB Serial 메뉴 입력/출력                                |
 | WebConfigServer     | AP+STA 웹 설정 서버(13절) — SerialMenu와 같은 백엔드 공유 |
 | WebControl          | 웹 PTZ 제어 패널(14절) — `/control` 화면과 `/api/*`, AP 차단 판정 |
-| Rs485PinValidation  | GPIO 핀 검증 규칙(Serial/Web 공유)                       |
+| Rs485PinValidation  | GPIO 핀 검증 규칙(Serial/Web 공유) — 실제 값은 BoardProfile |
 | GatewayActions      | Factory Reset, Pelco 테스트 커맨드 생성, AP 설정 적용(Serial/Web 공유) |
 | Diagnostics         | 카운터, 최근 패킷/raw 바이트 로그, 디버그 출력 관리      |
 | Storage             | Preferences/NVS 저장 및 로드                             |
-| StatusLed           | GPIO2 상태 LED 제어                                      |
+| StatusLed           | 상태 LED 제어 (핀/극성 런타임 설정, 3.4절)               |
 
 ---
 
@@ -1366,9 +1539,9 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
 
 핵심 요구사항:
 
-1. UART0는 USB Serial 메뉴와 디버그 전용으로 사용한다.
-2. UART2를 사용하여 RS485 패킷을 수신한다(VISCA/Pelco-D/Pelco-P, 12.2절).
-3. RS485 방향 제어 핀은 기본 GPIO27로 한다.
+1. USB Serial 콘솔은 메뉴와 디버그 전용으로 사용한다 — 클래식은 UART0, C3는 네이티브 USB CDC다(3.1절).
+2. RS485 패킷은 콘솔과 겹치지 않는 독립 UART로 수신한다(클래식 UART2 / C3 UART1, VISCA/Pelco-D/Pelco-P, 12.2절).
+3. RS485 방향 제어 핀 기본값은 보드가 정한다(클래식 GPIO27 / C3 GPIO6, `BoardProfile.h`).
 4. RS485 기본 모드는 Receive이다.
 5. VISCA 패킷은 `0xFF`를 기준으로 구분한다.
 6. 패킷 첫 바이트 `0x81~0x87`을 카메라 1~7로 해석한다(VISCA 입력 기준 — Pelco 입력은 ADDR 바이트로 매핑, 12.2절).
