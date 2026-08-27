@@ -63,6 +63,15 @@ pio run -e esp32dev      # ESP32 클래식
 경로에서 멀쩡히 링크되므로, 이 설정이 없으면 "클래식은 되는데 C3만 안 되는" 상태가 되어
 원인을 엉뚱한 데서 찾게 된다. 자세한 것은 `platformio.ini`의 `build_dir` 주석에 있다.
 
+**VS Code에서 빨간 줄이 뜨거나 디버그가 안 잡히면** `.vscode/c_cpp_properties.json`과
+`launch.json`이 낡은 것이다 — 둘 다 PlatformIO가 자동 생성하는 파일인데, `build_dir`이
+바뀌거나 디렉터리가 없어지면 지워진 경로를 그대로 가리킨 채 남는다(빌드 자체는 멀쩡한데
+IDE만 에러를 내므로 헷갈리기 쉽다). 다음으로 다시 만든다:
+
+```bash
+pio project init --ide vscode -e esp32c3_supermini
+```
+
 보드마다 다른 사실(어느 UART를 쓰는지, 기본 GPIO, 예약 핀 목록)은 전부
 [BoardProfile.h](src/BoardProfile.h) 한 곳에 있다. **다른 파일에 GPIO 번호나 UART 번호를
 직접 적으면 안 된다** — 보드를 늘릴 때 반드시 한 곳을 빠뜨린다.
@@ -1489,6 +1498,7 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
   api/state             브라우저 미리보기용 가짜 응답 (web/README.md)
 /tools
   embed_web.py          web/*.html -> src/generated/WebAssets.h (PlatformIO pre-build)
+  ptz.py                외부 제어용 CLI (doc/cli_interface.md)
 /src
   main.cpp
   config.h
@@ -1509,6 +1519,10 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
   Storage.h / .cpp
   StatusLed.h / .cpp
 ```
+
+헤더도 전부 `src/`에 있다 — PlatformIO 기본 골격의 `include/`, `lib/`, `test/`는 이
+프로젝트에서 쓰지 않아 지웠다(내용 없는 안내문만 들어 있었다). 빌드 산출물은 `.pio/`가
+아니라 프로젝트 밖에 쌓인다(3.1절).
 
 모듈별 역할:
 

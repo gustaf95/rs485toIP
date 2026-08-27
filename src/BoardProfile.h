@@ -95,7 +95,7 @@
 #define BOARD_STATUS_LED_ACTIVE_LOW_DEFAULT false
 
 #define BOARD_GPIO_IS_FLASH(pin) ((pin) >= 6 && (pin) <= 11)
-#define BOARD_GPIO_IS_USB(pin) ((void)(pin), false)
+// 클래식에는 USB 주변장치가 없어 BOARD_GPIO_IS_USB에 해당하는 것이 아예 없다.
 // GPIO1/3은 UART0(USB Serial 콘솔) - 클래식은 USB 브리지 칩이 이 핀에 물려 있어
 // 콘솔을 다른 데로 옮길 수 없다. C3와 달리 경고가 아니라 거부다.
 #define BOARD_GPIO_IS_RESERVED(pin) ((pin) == 1 || (pin) == 3 || BOARD_GPIO_IS_FLASH(pin))

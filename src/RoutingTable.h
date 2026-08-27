@@ -88,7 +88,7 @@ struct CameraSlot {
   ProtocolMode protocol;
   AddressMode addressMode;
   // RS485 버스의 유효 패킷 유무로 이 카메라의 전원을 자동으로 켜고/대기시킬지
-  // (main.cpp의 updateAutoPowerFromChatter()/pollAutoPowerUnknown() 참고). 기본값
+  // (main.cpp의 updateAutoPowerFromChatter()/reconcileAutoPower() 참고). 기본값
   // false(끔) - 켜면 지금까지의 수동 전원 동작 대신 자동 제어가 그 카메라를 넘겨받는다.
   bool autoPowerControl;
 
