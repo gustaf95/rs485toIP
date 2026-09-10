@@ -80,6 +80,14 @@ class WebConfigServer {
   void handleUpdateUpload();
   void handleUpdateDone();
 
+  // ---- 설정 백업/복원 ----
+  // 업로드는 펌웨어 업데이트와 같은 두 콜백 구조다 - 조각 콜백에서는 응답을 낼 수 없어서,
+  // 거기서는 파일을 _backupUpload에 모으기만 하고 파싱과 화면은 Done 쪽이 한다.
+  void handleBackupGet();
+  void handleBackupDownload();
+  void handleBackupUpload();
+  void handleBackupDone();
+
   void handleNotFound();
 
   // ---- 렌더링 도우미 ----
@@ -87,6 +95,10 @@ class WebConfigServer {
 
   // 업로드 중 감지한 실패 사유. 비어 있으면 성공이다.
   String _updateError;
+  // 업로드된 설정 파일 원문과, 그때 만난 실패 사유. _updateError/_updateHeaderChecked와
+  // 같은 역할이다.
+  String _backupUpload;
+  String _backupError;
   // 이미지 헤더(칩 종류)를 확인했는지. 첫 조각에서 한 번만 본다.
   bool _updateHeaderChecked = false;
   // 상단 메뉴. 현재 URI(_server.uri())를 보고 지금 화면을 표시한다.

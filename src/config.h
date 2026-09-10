@@ -12,6 +12,18 @@
 #define RS485_DE_RE_PIN_DEFAULT BOARD_RS485_DE_RE_PIN_DEFAULT
 #define RS485_BAUD_DEFAULT 9600
 
+// RS485 보드레이트로 고를 수 있는 값. Serial 메뉴("1. Set Baudrate")와 웹 설정 화면의
+// <select>가 이 목록을 그리고, 설정 파일 복원(ConfigBackup.cpp)도 이 목록에 있는 값만
+// 받아준다.
+//
+// 세 곳이 같은 목록을 봐야 하는 이유는 복원 쪽에 있다. 목록에 없는 값(예: 19200)을
+// 파일로 밀어 넣으면 그 뒤로 두 UI 어디에도 지금 값에 해당하는 항목이 없어서, 사용자가
+// RS485 화면을 열어 다른 항목을 건드리고 저장하는 것만으로 보드레이트가 조용히 바뀐다.
+// 그래서 목록에 없는 값은 복원 단계에서 거부하고, 목록 자체는 여기 한 곳에만 둔다.
+constexpr uint32_t RS485_BAUD_CHOICES[] = {2400, 4800, 9600, 38400, 115200};
+constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
+    sizeof(RS485_BAUD_CHOICES) / sizeof(RS485_BAUD_CHOICES[0]);
+
 // UART 신호 반전 여부의 초기 기본값. A/B(D+/D-)가 뒤집혀 결선된 배선에서는 이걸 켜야
 // 수신 바이트가 안 깨진다(0xFF 프레임이 0x00으로 읽히고 나머지는 한 비트씩 밀린 보수값이
 // 된다) - 그런 배선이면 RS485 Settings 화면에서 켜야 한다 (RoutingTable::applyDefaults()

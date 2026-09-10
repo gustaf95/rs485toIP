@@ -4,6 +4,7 @@
 #include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include "BoardProfile.h"
+#include "ConfigBackup.h"
 #include "FirmwareVersion.h"
 #include "Rs485PinValidation.h"
 #include "GatewayActions.h"
@@ -80,18 +81,21 @@ const char kPageStyle[] =
     "pre{background:#f4f4f4;padding:0.6em;overflow-x:auto}"
     "</style></head><body>";
 
-const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
-
 // 상단 메뉴의 설정 화면들. 제어 패널(/control)은 여기 없다 - 설정 항목이 아니라
 // 다른 화면으로 넘어가는 전환이라 navHtml()에서 따로 오른쪽 끝에 붙인다.
 struct NavItem {
   const char* path;
   const char* label;
 };
+// 설정 파일 업로드로 받아줄 최대 크기. 지금 형식의 파일이 주석까지 2.5KB 남짓이라
+// 넉넉하고, 설정 파일이 아닌 것을 올렸을 때 힙을 통째로 먹지 않게 하는 상한이기도 하다.
+const size_t kBackupUploadMax = 8192;
+
 const NavItem kNavItems[] = {
     {"/", "Status"},         {"/network", "Network"},   {"/rs485", "RS485"},
     {"/routing", "Routing"}, {"/counters", "Counters"}, {"/debug", "Debug"},
-    {"/update", "Firmware"},  {"/factory-reset", "Factory Reset"},
+    {"/backup", "Backup"},   {"/update", "Firmware"},
+    {"/factory-reset", "Factory Reset"},
 };
 
 // ---------------------------------------------------------------------------
@@ -186,6 +190,11 @@ void WebConfigServer::begin() {
   // 다 끝난 뒤 응답을 낼 때 한 번 불린다.
   _server.on("/update", HTTP_POST, [this]() { handleUpdateDone(); },
              [this]() { handleUpdateUpload(); });
+  _server.on("/backup", HTTP_GET, [this]() { handleBackupGet(); });
+  _server.on("/backup/download", HTTP_GET, [this]() { handleBackupDownload(); });
+  // 펌웨어 업로드와 같은 세 인자 on() - 세 번째가 조각마다, 두 번째가 다 받은 뒤 한 번.
+  _server.on("/backup", HTTP_POST, [this]() { handleBackupDone(); },
+             [this]() { handleBackupUpload(); });
   _server.on("/factory-reset", HTTP_GET, [this]() { handleFactoryResetGet(); });
   _server.on("/factory-reset", HTTP_POST, [this]() { handleFactoryResetPost(); });
   // 제어 패널(/control, /api/*)은 같은 서버에 얹는다.
@@ -207,16 +216,16 @@ void WebConfigServer::poll() {
 // 상단 메뉴. 지금 보고 있는 화면을 굵게 표시하고, 제어 패널은 오른쪽 끝에 버튼으로
 // 떼어 놓는다.
 //
-// 떼어 놓은 이유는 눈에 안 띄어서다. 설정 링크 여덟 개 사이에 끼워두면 나머지와 똑같이
+// 떼어 놓은 이유는 눈에 안 띄어서다. 설정 링크 아홉 개 사이에 끼워두면 나머지와 똑같이
 // 생긴 글자 한 덩어리라 "설정 항목 중 하나"로 읽히고 그냥 지나친다. /control 상단의
 // Config 링크도 오른쪽 끝에 있으므로, 같은 자리에 두면 두 화면을 오가는 길이 좌우 대칭이
 // 되어 왕복이 눈에 들어온다.
 String WebConfigServer::navHtml() {
   String uri = _server.uri();
   String html;
-  // 항목 일곱 개 + 제어 패널 버튼이 약 300바이트다. 미리 잡아두면 += 하는 동안
+  // 항목 아홉 개 + 제어 패널 버튼이 약 380바이트다. 미리 잡아두면 += 하는 동안
   // 재할당이 일어나지 않는다.
-  html.reserve(384);
+  html.reserve(448);
   html += "<nav>";
   for (const NavItem& item : kNavItems) {
     // 정확히 일치하거나, 하위 경로일 때 켠다 - /routing/cam이 Routing을,
@@ -481,8 +490,9 @@ String WebConfigServer::rs485PageBody(const String& error) {
   body += "<form method=\"POST\" action=\"/rs485\">";
 
   body += "<label>Baudrate: <select name=\"baudrate\">";
-  for (uint8_t i = 0; i < 5; i++) {
-    appendOption(body, (int)kBaudChoices[i], (int)cfg.rs485Baudrate, String(kBaudChoices[i]));
+  for (uint8_t i = 0; i < RS485_BAUD_CHOICE_COUNT; i++) {
+    appendOption(body, (int)RS485_BAUD_CHOICES[i], (int)cfg.rs485Baudrate,
+                 String(RS485_BAUD_CHOICES[i]));
   }
   body += "</select></label>";
 
@@ -963,6 +973,164 @@ void WebConfigServer::handleUpdateDone() {
 
   // 응답이 실제로 나갈 시간을 준 뒤 재부팅한다 - 곧바로 restart()하면 브라우저는
   // 연결이 끊긴 것만 보고 성공했는지 알 수 없다.
+  delay(1500);
+  ESP.restart();
+}
+
+// ---------------------------------------------------------------------------
+// Settings Backup / Restore
+// ---------------------------------------------------------------------------
+// 설정 전체를 텍스트 파일 하나로 받아 두고, 그 파일을 올려 한 번에 되돌린다. 파일 형식과
+// "없는 키는 지금 값을 그대로 둔다"는 규칙은 ConfigBackup.h에 있다.
+//
+// **복원한 뒤에는 재부팅한다.** Wi-Fi(STA/AP), RS485 UART, 상태 LED 핀이 한꺼번에 바뀔 수
+// 있는데, 살아 있는 상태에서 그걸 하나씩 다시 적용하면 무엇이 어떤 순서로 끊기고 붙는지가
+// 설정 조합마다 달라진다. 재부팅하면 setup()이 늘 하던 순서로 한 번에 적용하므로, 결과가
+// "그 설정으로 새로 켠 기기"와 완전히 같아진다 - Factory Reset이 재부팅하는 것과 같은
+// 이유다.
+//
+// 펌웨어 업데이트와 마찬가지로 **AP에서도 허용한다** (13.4.1절의 판단이 그대로 적용된다).
+
+void WebConfigServer::handleBackupGet() {
+  String body;
+  body.reserve(1536);
+
+  // 업로드가 중간에 끊겨 Done이 불리지 못한 경우를 위해 여기서도 한 번 보여준다
+  // (펌웨어 업데이트 화면과 같은 처리다).
+  if (_backupError.length() > 0) {
+    body += "<p style=\"color:red\"><b>Restore failed:</b> " + htmlEscape(_backupError) + "</p>";
+    _backupError = "";
+  }
+
+  body += "<p>The settings file holds everything on the Network, RS485, and Routing pages as "
+          "plain text, one <code>key=value</code> per line. Download one once a gateway works, "
+          "and use it to bring up the next one.</p>";
+
+  body += "<form method=\"GET\" action=\"/backup/download\">"
+          "<button type=\"submit\">Download settings file</button></form>";
+
+  body += "<p style=\"color:red\"><b>The file carries the Wi-Fi and AP passwords in the "
+          "clear.</b> Keep it where you would keep a password list.</p>";
+
+  body += "<h3>Restore</h3>";
+  body += "<form method=\"POST\" action=\"/backup\" enctype=\"multipart/form-data\">";
+  body += "<label>Settings file (.txt): "
+          "<input type=\"file\" name=\"config\" accept=\".txt\" required></label>";
+  body += "<button type=\"submit\">Upload and reboot</button></form>";
+
+  body += "<p><i>The gateway reboots afterwards so every setting takes effect at once. A key "
+          "that is missing from the file - or left with an empty value - keeps what this "
+          "gateway already has, so before copying a file to another gateway you can delete the "
+          "lines that have to stay different there (AP name, static IP). GPIO pins are checked "
+          "against this board and a set that does not fit is dropped on its own, which is what "
+          "happens with a file from the other board type; everything else still loads. Anything "
+          "skipped is listed on the next page.</i></p>";
+
+  sendPage("Settings Backup", body);
+}
+
+void WebConfigServer::handleBackupDownload() {
+  String text;
+  serializeConfig(_routing.get(), text);
+
+  // 받아둔 파일이 어느 기기 것인지 이름만 봐도 알 수 있게 MAC 뒷자리를 넣는다 - AP SSID
+  // 기본값에 들어가는 것과 같은 네 자리다. 여러 대를 백업해도 Downloads 폴더에서 섞이지
+  // 않는다.
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  const String filename = "rs485gw-" + mac.substring(mac.length() - 4) + "-config.txt";
+
+  _server.sendHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+  _server.send(200, "text/plain", text);
+}
+
+// 업로드 조각마다 불린다. 여기서는 응답을 보낼 수 없으므로 파일을 모으기만 하고, 실패
+// 사유는 _backupError에 담아 Done 쪽에서 화면으로 낸다.
+void WebConfigServer::handleBackupUpload() {
+  HTTPUpload& upload = _server.upload();
+
+  switch (upload.status) {
+    case UPLOAD_FILE_START:
+      _backupError = "";
+      _backupUpload = "";
+      // 상한만큼 한 번에 잡아 둔다. 조각마다 늘리면 그때마다 재할당과 복사가 생기는데,
+      // Wi-Fi/lwIP와 힙을 나눠 쓰는 상황에서 굳이 만들 필요가 없는 일이다.
+      _backupUpload.reserve(kBackupUploadMax);
+      break;
+
+    case UPLOAD_FILE_WRITE:
+      if (_backupError.length() > 0) break;  // 이미 실패 - 나머지는 버린다
+      if (_backupUpload.length() + upload.currentSize > kBackupUploadMax) {
+        _backupError = "File is bigger than " + String(kBackupUploadMax) +
+                        " bytes, so it is not a settings file. Nothing was changed.";
+        _backupUpload = "";
+        break;
+      }
+      // upload.buf는 NUL로 끝나지 않으므로 문자열로 그대로 붙일 수 없다. 위에서 상한만큼
+      // reserve() 해두었으니 이 루프에서 재할당은 일어나지 않는다.
+      for (size_t i = 0; i < upload.currentSize; i++) {
+        _backupUpload += (char)upload.buf[i];
+      }
+      break;
+
+    case UPLOAD_FILE_END:
+      break;
+
+    case UPLOAD_FILE_ABORTED:
+    default:
+      if (_backupError.length() == 0) _backupError = "Upload aborted.";
+      _backupUpload = "";
+      break;
+  }
+}
+
+void WebConfigServer::handleBackupDone() {
+  if (_backupError.length() > 0) {
+    String body = "<p style=\"color:red\"><b>Restore failed:</b> " + htmlEscape(_backupError) +
+                  "</p><p>Nothing was changed.</p>"
+                  "<p><a href=\"/backup\">Back to Settings Backup</a></p>";
+    _backupError = "";
+    _backupUpload = "";
+    sendPage("Settings Backup", body);
+    return;
+  }
+
+  SystemConfig& cfg = _routing.get();
+  ConfigRestoreResult result = restoreConfig(_backupUpload, cfg);
+  // 파싱이 끝나면 곧바로 놓아준다 - Wi-Fi 비밀번호가 든 8KB짜리 버퍼를 필요 이상으로 들고
+  // 있을 이유가 없고, 아래 화면을 조립할 힙도 그만큼 늘어난다.
+  _backupUpload = "";
+
+  if (!result.ok) {
+    String body = "<p style=\"color:red\"><b>Restore failed:</b> " + htmlEscape(result.error) +
+                  "</p><p><a href=\"/backup\">Back to Settings Backup</a></p>";
+    sendPage("Settings Backup", body);
+    return;
+  }
+
+  _storage.save(cfg);
+
+  String body;
+  body.reserve(1024);
+  body += "<p><b>Loaded " + String(result.applied) + " setting(s) from the file.</b></p>";
+
+  if (result.skipped > 0) {
+    body += "<p style=\"color:red\"><b>" + String(result.skipped) +
+            " line(s) were skipped</b> - those settings were left as they already were:</p>";
+    body += "<pre>" + htmlEscape(result.notes) + "</pre>";
+    body += "<p>Write these down before leaving this page; the list is not kept after the "
+            "reboot.</p>";
+  }
+
+  body += "<p>Rebooting now so every setting takes effect together. If the Wi-Fi or AP settings "
+          "changed, join the new network before opening the gateway again.</p>";
+
+  // **자동 새로고침을 걸지 않는다.** 펌웨어 업데이트 화면은 20초 뒤 스스로 돌아오지만,
+  // 여기서 같은 걸 하면 건너뛴 줄 목록이 사라진다 - 이 화면에서 유일하게 다시 볼 수 없는
+  // 정보가 그것이다.
+  sendPage("Settings Backup", body);
+
+  // 응답이 실제로 나갈 시간을 준 뒤 재부팅한다 (펌웨어 업데이트 쪽과 같은 이유).
   delay(1500);
   ESP.restart();
 }

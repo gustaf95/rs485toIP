@@ -1437,7 +1437,10 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 | `GET /debug/live` | Live Packet Monitor | 1초 자동 새로고침. Serial과 달리 Debug Mode를 자동으로 켜지 않음 — `/debug`에서 먼저 켜야 함 |
 | `GET /debug/raw` | Raw Byte Monitor | 1초 자동 새로고침, 파싱/체크섬과 무관하게 항상 채워지는 별도 로그(13.3절) |
 | `POST /debug/test-command` | Send Test Command | Pelco-D/P Query Pan Position 프로브 전송 후 `/debug/raw`로 이동 |
-| `GET`/`POST /update` | (Serial 대응 없음) | 펌웨어 업데이트(OTA, 13.4절). 현재 빌드 시각/슬롯 표시 + `.bin` 업로드 폼 |
+| `GET /backup` | (Serial 대응 없음) | 설정 백업/복원(13.4.2절). 다운로드 버튼 + 설정 파일 업로드 폼 |
+| `GET /backup/download` | | 지금 설정 전체를 `rs485gw-XXXX-config.txt`로 내려받는다 |
+| `POST /backup` | | 설정 파일 업로드 → 적용/건너뛴 줄 표시 → 재부팅 |
+| `GET`/`POST /update` | (Serial 대응 없음) | 펌웨어 업데이트(OTA, 13.4.1절). 현재 빌드 시각/슬롯 표시 + `.bin` 업로드 폼 |
 | `GET`/`POST /factory-reset` | Factory Reset | 경고 문구 + 확인 버튼(POST 전용, 타이핑 확인 대신 실수로 못 누르게 별도 페이지+버튼 클릭) |
 | `GET /control` | (Serial 대응 없음) | PTZ 제어 패널(14절). 화면 원본은 `web/control.html`이고 빌드 시 gzip PROGMEM 배열로 구워진다 |
 | `GET /api/state` | | 제어 패널이 1초마다 폴링하는 상태 JSON |
@@ -1464,6 +1467,7 @@ Input Protocol이나 어느 화면이 열려 있는지와 무관하게 RS485 바
 |---|---|
 | `Rs485PinValidation.h/.cpp` | GPIO 예약/입력전용/스트래핑 핀 검사 |
 | `GatewayActions.h/.cpp` | Factory Reset 시퀀스, Pelco-D/P 테스트 커맨드 패킷 생성, AP SSID/Password 적용(`applyApSettings()`) |
+| `config.h`의 `RS485_BAUD_CHOICES` | 고를 수 있는 보드레이트 목록 — Serial 메뉴, 웹 `<select>`, 설정 파일 복원이 같은 목록을 본다(13.4.2절) |
 
 ### 13.4.1 펌웨어 업데이트 (OTA)
 
@@ -1517,6 +1521,119 @@ app1,    app,  ota_1, 0x150000,1280K    새 펌웨어가 기록될 자리
 - 진행률 표시는 없다. 설정 화면은 JS를 쓰지 않는다는 방침(13.2절)이라 평범한 폼
   POST이고, 업로드가 끝날 때까지 브라우저가 대기 표시만 낸다.
 
+### 13.4.2 설정 백업 / 복원
+
+`GET /backup`이 다운로드 버튼과 업로드 폼을, `GET /backup/download`가 설정 파일을,
+`POST /backup`이 업로드를 받는다. 구현은 `ConfigBackup.h/.cpp`에 있다.
+
+받아 두는 목적은 두 가지다 — 손대기 전에 지금 상태를 남겨두는 것, 그리고 한 대를
+맞춰놓고 나머지를 같은 값으로 세우는 것(교회에 게이트웨이가 여러 대다). 특히 두 번째가
+형식을 고른 기준이 됐다.
+
+#### 형식: `key=value` 한 줄씩
+
+파일 이름은 `rs485gw-XXXX-config.txt`(XXXX는 AP SSID 기본값과 같은 MAC 뒷자리)다.
+`.txt`라 윈도우에서 더블클릭하면 메모장이 열린다.
+
+```text
+format=rs485-visca-gateway-config-1
+#
+# RS485 VISCA Gateway settings
+#   device   : RS485Gateway-A1B2
+#   board    : ESP32-C3 Super Mini
+#   ...
+wifi.ssid=DongsukChurch
+wifi.password=...
+wifi.dhcp=1
+...
+rs485.baud=9600
+rs485.input_protocol=3
+...
+cam1.ip=192.168.0.101
+cam1.port=52381
+cam1.protocol=0
+cam1.address_mode=0
+cam1.auto_power=0
+```
+
+**JSON이 아닌 이유.** 이 프로젝트에는 JSON 라이브러리가 없고(`WebServer`도
+arduino-esp32 내장만 쓴다), 중첩 객체와 배열까지 다루는 파서를 직접 넣어봐야 얻는 게
+없다. `key=value`는 파서가 짧게 끝나고, 무엇보다 **현장에서 메모장으로 열어 고칠 수
+있다** — 파일의 주 용도가 "여러 대를 같은 값으로 맞추기"라 그게 결정적이었다.
+
+숫자 열거값(프로토콜, Address Mode 등)이 뭘 뜻하는지는 파일 안에 `#` 주석으로 같이
+적힌다. 복원할 때 `#`으로 시작하는 줄과 빈 줄은 무시하고, `=` 앞뒤 공백도 걷어낸다.
+
+#### 없는 키는 지금 값을 그대로 둔다
+
+이 한 가지 규칙이 "일괄 설정"을 성립시킨다:
+
+| 파일의 상태 | 결과 |
+| --- | --- |
+| 키가 없다 | 그 항목은 기기의 지금 값 그대로 |
+| 키는 있고 값이 비었다 | 위와 같다(웹 폼의 "leave blank to keep current"와 같은 규칙) |
+| 값이 있고 해석된다 | 적용 |
+| 값이 있는데 해석 안 된다 | 그 줄만 건너뛰고, 사유를 화면에 표시 |
+
+그래서 **기기마다 달라야 하는 줄만 지우고 나머지를 여러 대에 뿌리면 된다.** 파일에도
+그렇게 하라고 주석이 붙어 나온다:
+
+- `wifi.ap_ssid` / `wifi.ap_password` — AP 이름 기본값에 MAC 뒷자리가 들어가 기기마다
+  다르다(13.1절). 지우지 않고 그대로 올리면 두 대의 AP 이름이 같아진다.
+- `wifi.static_ip` / `wifi.gateway` / `wifi.subnet` — 고정 IP를 쓴다면 당연히 겹치면 안 된다.
+
+설정 항목이 늘어난 펌웨어가 옛 파일을 읽는 경우도 같은 규칙으로 자연히 처리된다 —
+`Storage::load()`가 짧은 블롭을 받아주는 것(10.0.1절)과 같은 생각이다.
+
+#### 한 줄이 틀려도 나머지는 들어간다
+
+값 하나가 잘못됐다고 파일 전체를 버리면, 손으로 고친 파일에서 오타 하나 때문에 나머지
+서른 줄을 다시 넣어야 한다. 그래서 해석되는 항목만 반영하고 **건너뛴 줄은 전부 사유와
+함께 결과 화면에 나열한다**(`line 12 (rs485.baud): expected one of 2400, ...` 꼴).
+
+거부되는 값들:
+
+| 항목 | 규칙 | 이유 |
+| --- | --- | --- |
+| `rs485.baud` | `RS485_BAUD_CHOICES`에 있는 값만 | 목록에 없는 값(예: 19200)을 넣으면 그 뒤로 Serial/웹 어디에도 지금 값에 해당하는 항목이 없어서, RS485 화면을 열어 저장하는 것만으로 보드레이트가 조용히 바뀐다 |
+| `wifi.ap_password` | 8자 이상 | WPA2가 8자 미만을 받지 않아 `softAP()`가 실패한다 — **AP 자체가 안 뜨고**, 웹이 유일한 접근 경로인 기기에서는 그게 곧 잠김이다 |
+| SSID/비밀번호 길이 | 필드 크기 초과면 거부 | 잘라 넣으면 조용히 접속만 안 되는 값이 된다 |
+| 열거값 | 삭제된 값(Raw Bridge=4, RAW_DATA_UDP=3) 제외한 범위 | 10.1절과 같은 이유 — 파일로 되살아나면 안 된다 |
+| 숫자 필드 | 숫자가 아니면 거부 | `String::toInt()`는 `"abc"`에도 0을 돌려준다. 오타 하나가 그대로 핀 번호 0이 된다 |
+
+파일이 통째로 거부되는 경우는 하나뿐이다 — 첫 줄의 `format=` 표시가 없을 때. 그때는
+**아무것도 바뀌지 않는다.** 이게 없으면 엉뚱한 파일(예: `firmware.bin`)을 올렸을 때
+"0개 적용됨"이라는 알 수 없는 결과만 나오고 화면이 이유를 설명할 수 없다. 업로드 크기도
+8KB로 제한한다(지금 형식의 파일은 주석까지 2.5KB 남짓이다).
+
+#### GPIO 핀은 넷을 묶어서 판정한다
+
+RX/TX/DE-RE/LED 네 핀은 서로를 보고 검사해야 해서(같은 핀을 두 곳에 쓸 수 없다) 줄마다
+보지 않고 파일을 다 읽은 뒤 한꺼번에 `validateRs485Pin()`/`validateStatusLedPin()`(13.4절)에
+건다. 하나라도 걸리면 **넷 다** 기기의 원래 값으로 되돌린다 — 셋만 바뀐 채로 남으면 파일에도
+기기에도 없는 조합이 되어 어느 쪽을 봐도 지금 배선을 알 수 없게 된다.
+
+**다른 보드에서 받은 파일이 여기 걸린다.** 클래식 ESP32와 ESP32-C3는 쓸 수 있는 GPIO가
+거의 겹치지 않아서(3.1절), C3 파일을 클래식에 올리면 핀만 빠지고 Wi-Fi·라우팅·프로토콜 등
+나머지는 그대로 복원된다. 펌웨어 이미지(13.4.1절)와 달리 **보드가 다르다고 파일 전체를
+거부하지는 않는다** — 잘못 올리면 벽돌이 되는 펌웨어와 달리, 설정은 안 맞는 부분만 빼고
+받는 쪽이 쓸모 있기 때문이다.
+
+#### 알아둘 것
+
+- **복원하면 재부팅한다.** Wi-Fi(STA/AP), RS485 UART, 상태 LED 핀이 한꺼번에 바뀔 수 있는데,
+  살아 있는 상태에서 하나씩 다시 적용하면 무엇이 어떤 순서로 끊기고 붙는지가 설정 조합마다
+  달라진다. 재부팅하면 `setup()`이 늘 하던 순서로 한 번에 적용하므로 결과가 "그 설정으로 새로
+  켠 기기"와 완전히 같아진다 — Factory Reset이 재부팅하는 것과 같은 이유다.
+- **결과 화면에는 자동 새로고침을 걸지 않는다.** 펌웨어 업데이트 화면은 20초 뒤 스스로
+  돌아오는데, 여기서 같은 걸 하면 건너뛴 줄 목록이 사라진다 — 이 화면에서 유일하게 다시 볼
+  수 없는 정보가 그것이다.
+- **파일에 Wi-Fi/AP 비밀번호가 평문으로 들어 있다.** 설정 화면 전체가 그렇듯 로그인이 없어서
+  AP나 LAN에 들어올 수 있는 사람은 어차피 그 값을 화면에서 바꿀 수 있지만, 파일은 기기 밖으로
+  나가서 남는다는 점이 다르다. 화면에도 그렇게 적어 두었다.
+- **펌웨어 업로드와 마찬가지로 AP에서도 허용한다** (13.4.1절의 판단이 그대로 적용된다).
+- Serial 메뉴에는 대응 화면이 없다. 파일을 주고받을 방법이 없어서다.
+
 ### 13.5 알려진 제약
 
 - Wi-Fi 스캔(`/network`)은 **직전 스캔 결과**를 보여준다. 처음 열면
@@ -1534,9 +1651,9 @@ app1,    app,  ota_1, 0x150000,1280K    새 펌웨어가 기록될 자리
     1~2KB). `scanDelete()`를 부르면 "직전 결과를 보여준다"가 성립하지 않는다.
 - "Retry Wi-Fi Connection"은 최대 `WIFI_CONNECT_TIMEOUT_MS`(15초)까지 요청을
   블로킹한다 — Serial의 "4. Retry Wi-Fi Connection"과 동일한 동작.
-- Response Mode(VISCA `NONE`/`SYNTHETIC`/`FORWARD`/`FORWARD_REWRITE`)는 Serial
-  메뉴에도 노출되어 있지 않아 웹에도 넣지 않았다 — 둘 다 `applyDefaults()`가
-  정하는 기본값(`NONE`)만 쓸 수 있다.
+- Response Mode(VISCA `NONE`/`SYNTHETIC`/`FORWARD`/`FORWARD_REWRITE`)는 웹 RS485
+  화면의 "Camera Response Mode"에 있고(12.2.1절의 Serial 쪽과 같은 값), 설정 파일에는
+  `rs485.response_mode`로 나온다.
 
 ---
 
@@ -1615,6 +1732,7 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
   WebControl.h / .cpp
   Rs485PinValidation.h / .cpp
   GatewayActions.h / .cpp
+  ConfigBackup.h / .cpp
   Diagnostics.h / .cpp
   Storage.h / .cpp
   StatusLed.h / .cpp
@@ -1642,6 +1760,7 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
 | WebControl          | 웹 PTZ 제어 패널(14절) — `/control` 화면과 `/api/*`, AP 차단 판정 |
 | Rs485PinValidation  | GPIO 핀 검증 규칙(Serial/Web 공유) — 실제 값은 BoardProfile |
 | GatewayActions      | Factory Reset, Pelco 테스트 커맨드 생성, AP 설정 적용(Serial/Web 공유) |
+| ConfigBackup        | 설정 전체를 텍스트 파일로 쓰고 다시 읽기(13.4.2절)       |
 | Diagnostics         | 카운터, 최근 패킷/raw 바이트 로그, 디버그 출력 관리      |
 | Storage             | Preferences/NVS 저장 및 로드                             |
 | StatusLed           | 상태 LED 제어 (핀/극성 런타임 설정, 3.4절)               |

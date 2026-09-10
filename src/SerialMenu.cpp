@@ -6,8 +6,6 @@
 #include "GatewayActions.h"
 
 namespace {
-const uint32_t kBaudChoices[5] = {2400, 4800, 9600, 38400, 115200};
-
 // 한 줄 입력의 최대 길이. 메뉴에서 가장 긴 입력이 Wi-Fi 비밀번호(63자)라 넉넉하다.
 const uint16_t kMaxLineLength = 96;
 }  // namespace
@@ -501,11 +499,11 @@ void SerialMenu::applyRs485Settings(const SystemConfig& cfg) {
 
 void SerialMenu::handleRs485Menu(const String& line) {
   if (line == "1") {
-    Serial.println("1. 2400");
-    Serial.println("2. 4800");
-    Serial.println("3. 9600");
-    Serial.println("4. 38400");
-    Serial.println("5. 115200");
+    for (uint8_t i = 0; i < RS485_BAUD_CHOICE_COUNT; i++) {
+      Serial.print(i + 1);
+      Serial.print(". ");
+      Serial.println(RS485_BAUD_CHOICES[i]);
+    }
     Serial.print("> ");
     _prompt = Prompt::RS485_BAUD_CHOICE;
   } else if (line == "2") {
@@ -992,8 +990,8 @@ void SerialMenu::handlePrompt(const String& line) {
     }
     case Prompt::RS485_BAUD_CHOICE: {
       int choice = line.toInt();
-      if (choice >= 1 && choice <= 5) {
-        cfg.rs485Baudrate = kBaudChoices[choice - 1];
+      if (choice >= 1 && choice <= (int)RS485_BAUD_CHOICE_COUNT) {
+        cfg.rs485Baudrate = RS485_BAUD_CHOICES[choice - 1];
         applyRs485Settings(cfg);
         Serial.println("Baudrate set and saved to flash.");
       } else {
