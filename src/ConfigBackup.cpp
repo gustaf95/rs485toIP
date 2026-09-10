@@ -188,7 +188,9 @@ void serializeConfig(const SystemConfig& cfg, String& out) {
 
   out += "\n# ---- Status LED ----\n";
   appendNum(out, "led.pin", cfg.statusLedPin);
-  out += "# active_low: 1 = LOW lights the LED (the C3 Super Mini's on-board one)\n";
+  out += "# active_low: 1 = LOW lights the LED (the C3 Super Mini's on-board one).\n";
+  out += "# It describes the wiring at led.pin, so it is kept or dropped together\n";
+  out += "# with the pins above.\n";
   appendNum(out, "led.active_low", cfg.statusLedActiveLow ? 1 : 0);
 
   out += "\n# ---- Debug ----\n";
@@ -243,6 +245,8 @@ ConfigRestoreResult restoreConfig(const String& text, SystemConfig& cfg) {
   // 파일을 다 읽은 뒤에 한꺼번에 본다.
   bool pinsTouched = false;
   uint16_t pinKeysApplied = 0;
+  // led.active_low는 핀 번호가 아니지만 핀 세트와 운명을 같이한다 - 아래 되돌리기 참고.
+  uint16_t ledPolarityApplied = 0;
 
   int pos = 0;
   const int len = (int)text.length();
@@ -410,6 +414,7 @@ ConfigRestoreResult restoreConfig(const String& text, SystemConfig& cfg) {
     } else if (key == "led.active_low") {
       if (parseBool(value, &flag)) {
         work.statusLedActiveLow = flag;
+        ledPolarityApplied = 1;
         result.applied++;
       } else {
         result.skipped++;
@@ -508,12 +513,24 @@ ConfigRestoreResult restoreConfig(const String& text, SystemConfig& cfg) {
       work.rs485TxPin = cfg.rs485TxPin;
       work.rs485DeRePin = cfg.rs485DeRePin;
       work.statusLedPin = cfg.statusLedPin;
-      result.applied -= pinKeysApplied;
-      result.skipped += pinKeysApplied;
-      note("rs485.rx_pin / rs485.tx_pin / rs485.de_re_pin / led.pin: " + pinError +
-           " The whole pin set was rejected, so this board keeps RX=" + String(cfg.rs485RxPin) +
-           " TX=" + String(cfg.rs485TxPin) + " DE/RE=" + String(cfg.rs485DeRePin) +
-           " LED=" + String(cfg.statusLedPin) + ".");
+      // **극성도 같이 되돌린다.** 이것만 파일 값으로 남으면 클래식 -> C3에서 정확히
+      // 틀린다: 클래식의 기본값은 액티브 하이(외부 LED)이고 C3 Super Mini의 온보드
+      // LED는 액티브 로우인데, 핀은 C3의 8번으로 되돌아가고 극성만 파일의 0이 남으면
+      // 온보드 LED가 꺼져야 할 때 켜진다. 극성은 보드가 아니라 그 핀에 무엇이 어떻게
+      // 물렸는지가 정하는 값이라(RoutingTable.h 참고), 핀을 거부했으면 극성도 같이
+      // 거부하는 것이 맞다.
+      //
+      // 파일에 led.pin 없이 led.active_low만 있는 경우는 여기 오지 않는다(pinsTouched가
+      // false다) - 그건 지금 핀의 극성을 고치겠다는 뜻이므로 그대로 적용된다.
+      work.statusLedActiveLow = cfg.statusLedActiveLow;
+      const uint16_t reverted = pinKeysApplied + ledPolarityApplied;
+      result.applied -= reverted;
+      result.skipped += reverted;
+      note("rs485.rx_pin / rs485.tx_pin / rs485.de_re_pin / led.pin / led.active_low: " +
+           pinError + " The whole pin set was rejected, so this board keeps RX=" +
+           String(cfg.rs485RxPin) + " TX=" + String(cfg.rs485TxPin) +
+           " DE/RE=" + String(cfg.rs485DeRePin) + " LED=" + String(cfg.statusLedPin) +
+           " active_low=" + String(cfg.statusLedActiveLow ? 1 : 0) + ".");
     }
   }
 
