@@ -5,6 +5,7 @@
 #include "RoutingTable.h"
 #include "Storage.h"
 #include "Diagnostics.h"
+#include "GatewayActions.h"
 #include "ViscaParser.h"
 #include "PelcoDParser.h"
 #include "PelcoPParser.h"
@@ -350,6 +351,14 @@ void connectWifi() {
   // "tcpip_send_msg_wait_sem ... Invalid mbox" assert로 재부팅 루프에 빠진다.
   // AP_STA로 하는 이유는 WebConfigServer의 AP를 STA와 동시에 띄우기 위함이다.
   WiFi.mode(WIFI_AP_STA);
+  applyWifiTxPower();
+  // **같은 SSID의 AP가 여러 대면 가장 센 것에 붙는다.** 기본값(FAST_SCAN)은 채널 순서로
+  // 처음 찾은 AP에 바로 붙는데, 현장에서 DongBroad가 -42dBm/-85dBm 두 대로 보였고 먼
+  // 쪽을 잡아 AUTH_EXPIRE만 반복하며 15초를 날렸다. 그동안 STA가 채널을 훑느라 같은
+  // 라디오를 쓰는 AP도 사실상 안 보이게 된다. 아래 maintainWifi()의 재시도에도 그대로
+  // 적용된다(WiFiSTA의 정적 설정이라).
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
 
   if (strlen(cfg.wifi.ssid) == 0) {
     if (verbose) {

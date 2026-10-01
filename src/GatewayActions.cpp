@@ -1,5 +1,6 @@
 #include "GatewayActions.h"
 #include <WiFi.h>
+#include "BoardProfile.h"
 #include "config.h"
 
 void performFactoryReset(RoutingTable& routing, Storage& storage, Rs485Port& rs485,
@@ -43,6 +44,14 @@ void buildPelcoPTestCommand(uint8_t out[8]) {
   out[7] = x;
 }
 
+void applyWifiTxPower() {
+#ifdef BOARD_WIFI_TX_POWER
+  WiFi.setTxPower(BOARD_WIFI_TX_POWER);
+#endif
+}
+
 void applyApSettings(const SystemConfig& cfg) {
   WiFi.softAP(cfg.wifi.apSsid, cfg.wifi.apPassword);
+  // softAP()가 인터페이스를 다시 올리면서 출력을 기본값으로 되돌릴 수 있어 매번 다시 건다.
+  applyWifiTxPower();
 }

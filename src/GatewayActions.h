@@ -24,3 +24,7 @@ void buildPelcoPTestCommand(uint8_t out[8]);
 // cfg.wifi.apSsid/apPassword를 WiFi.softAP()에 그대로 재적용한다. Serial/Web 어느
 // 쪽에서 AP SSID/Password를 바꾸든 재부팅 없이 즉시 반영되도록 공유한다.
 void applyApSettings(const SystemConfig& cfg);
+
+// 보드가 BOARD_WIFI_TX_POWER를 정의했으면 Wi-Fi 송신 출력을 그 값으로 낮춘다
+// (BoardProfile.h의 C3 Super Mini 주석 참고). 정의하지 않은 보드에서는 아무것도 안 한다.
+void applyWifiTxPower();
