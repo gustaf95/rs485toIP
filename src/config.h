@@ -218,6 +218,25 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 // 오래 거짓말하지 않게 한다. 카메라가 명령을 적용할 여유는 줘야 하므로 0은 아니다.
 #define MODE_INQUIRY_SET_VERIFY_DELAY_MS 300
 
+// ---- 카메라 OSD 메뉴 ----
+// ZU-EPC7000의 MENU 키는 Preset 95 호출(`FF id 00 07 00 5F`)을 보내고, 메뉴 안에서는
+// ENT/ESC가 NEAR/FAR 키를 겸한다 - ENT = Focus Near(CMND1 bit0), ESC = Focus Far
+// (CMND2 bit7). 둘 다 바로 뒤에 Stop이 따라온다(실측 2026-10-01, 3번 ED-P 카메라).
+//
+// FoMaKo는 Preset 95 호출로 메뉴가 열리고 닫히지만(리모컨 MENU 키와 같다 - 열기/닫기/
+// 상위 메뉴), VISCA Focus Near/Far는 메뉴 안에서 아무 의미가 없다. 그래서 메뉴가 열려
+// 있는 동안만 바꿔 보낸다 (실측 2026-10-01, 6번 FoMaKo):
+//   ESC -> Preset 95 호출               상위 메뉴/닫기 - 동작 확인
+//   ENT -> `8x 01 7E 01 02 00 01 FF`    Sony OSD Enter - 하위 메뉴 진입 확인
+// 매뉴얼은 리모컨 HOME 키를 확인 키로 적고 있지만, VISCA Pan-tilt Home(`8x 01 06 04`)은
+// 메뉴에서 ACK만 받고 아무 일도 안 했다. Pan Right도 마찬가지로 반응이 없었다.
+// 메뉴가 열렸는지는 `8x 09 06 06` 조회(y0 50 02 = 열림)로 확인한다.
+#define PELCO_MENU_PRESET 95
+#define VISCA_MENU_ENTER_LAST 0x01
+#define VISCA_MENU_INQ_CATEGORY 0x06
+#define VISCA_MENU_INQ_CODE 0x06
+#define VISCA_MENU_STATE_ON 0x02
+
 // ---- Auto Power Control ----
 // 카메라 슬롯별 옵션(off가 기본). on이면 RS485 버스에 흐르는 유효 패킷(체크섬까지
 // 통과한, 지정된 카메라 ID와 무관한 모든 패킷)의 양으로 컨트롤러가 활동 중인지

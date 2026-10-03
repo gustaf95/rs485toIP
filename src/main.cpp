@@ -5,6 +5,7 @@
 #include "RoutingTable.h"
 #include "Storage.h"
 #include "Diagnostics.h"
+#include "GatewayActions.h"
 #include "ViscaParser.h"
 #include "PelcoDParser.h"
 #include "PelcoPParser.h"
@@ -56,6 +57,10 @@ struct CameraModeCache {
   uint8_t wbMode;     // VISCA CAM_WBMode:       0x00 Auto, 0x05 Manual, ...
   uint8_t focusMode;  // VISCA CAM_FocusAFMode:  0x02 Auto, 0x03 Manual, 0x04 One Push
   uint8_t backlight;  // VISCA CAM_Back Light:   0x02 On, 0x03 Off
+  // OSD 메뉴가 열려 있는지 (`8x 09 06 06` 조회로만 갱신, config.h PELCO_MENU_PRESET 참고).
+  // 기본값이 false인 게 중요하다 - 틀리게 true면 ENT(Focus Near)가 Home으로 바뀌어
+  // 카메라가 정중앙으로 돌아간다. 조회를 지원하지 않는 카메라는 영영 false로 남는다.
+  bool menuOpen;
   // 각 항목을 **실제로 관측했는지** (MODE_KNOWN_* 비트).
   //
   // 위 초기값들이 그럴듯한 기본값이라 그냥 두면 구분이 안 된다 - 컨트롤러에게는 부팅
@@ -71,6 +76,7 @@ struct CameraModeCache {
 #define MODE_KNOWN_WB 0x04
 #define MODE_KNOWN_FOCUS 0x08
 #define MODE_KNOWN_BACKLIGHT 0x10
+#define MODE_KNOWN_MENU 0x20
 
 // 초기값 = 전부 Auto (VISCA 코드로 AE Full Auto / WB Auto / Focus Auto).
 CameraModeCache modeCache[CAMERA_SLOT_COUNT] = {};
@@ -82,6 +88,7 @@ void resetModeCache() {
     modeCache[i].focusMode = 0x02;  // Auto Focus
     // BLC만 Auto 계열 기본값이 없다. ED-P 매뉴얼의 공장 초기값이 OFF라 그쪽을 따른다.
     modeCache[i].backlight = 0x03;  // Back Light Off
+    modeCache[i].menuOpen = false;
     modeCache[i].known = 0;
     modeCache[i].updatedMs = 0;
   }
@@ -137,8 +144,9 @@ void recordAutoPowerChatterPacket() {
 
 // 지금 답을 기다리는 중인 조회. VISCA 조회 응답이 전부 `y0 50 pp FF`로 똑같이 생겨서,
 // 어느 질문의 답인지는 "무엇을 물었는지"를 기억하는 것으로만 알 수 있다.
-enum class ModeInquiry : uint8_t { NONE = 0, POWER, AE, WB, FOCUS, BACKLIGHT };
-#define MODE_INQUIRY_ITEM_COUNT 5
+enum class ModeInquiry : uint8_t { NONE = 0, POWER, AE, WB, FOCUS, BACKLIGHT, MENU };
+#define MODE_INQUIRY_ITEM_COUNT 6
+#define MODE_INQUIRY_ITEM_MENU 5  // ModeInquiry::MENU - 1
 ModeInquiry pendingInquiry = ModeInquiry::NONE;
 uint8_t pendingInquiryCam = 0;
 unsigned long lastInquiryMs = 0;
@@ -360,6 +368,14 @@ void connectWifi() {
   // "tcpip_send_msg_wait_sem ... Invalid mbox" assert로 재부팅 루프에 빠진다.
   // AP_STA로 하는 이유는 WebConfigServer의 AP를 STA와 동시에 띄우기 위함이다.
   WiFi.mode(WIFI_AP_STA);
+  applyWifiTxPower();
+  // **같은 SSID의 AP가 여러 대면 가장 센 것에 붙는다.** 기본값(FAST_SCAN)은 채널 순서로
+  // 처음 찾은 AP에 바로 붙는데, 현장에서 DongBroad가 -42dBm/-85dBm 두 대로 보였고 먼
+  // 쪽을 잡아 AUTH_EXPIRE만 반복하며 15초를 날렸다. 그동안 STA가 채널을 훑느라 같은
+  // 라디오를 쓰는 AP도 사실상 안 보이게 된다. 아래 maintainWifi()의 재시도에도 그대로
+  // 적용된다(WiFiSTA의 정적 설정이라).
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
 
   if (strlen(cfg.wifi.ssid) == 0) {
     if (verbose) {
@@ -735,12 +751,22 @@ void updateModeCacheFromSet(uint8_t camNumber, uint8_t viscaCode, uint8_t value)
   // 낙관적 갱신도 "관측"으로 친다 - 방금 우리가 지나가는 걸 본 명령이라 근거가 있고,
   // 틀렸다면 아래 확인 조회가 곧 바로잡는다. ModeInquiry 열거와 같은 순서다.
   static const uint8_t kKnownBits[MODE_INQUIRY_ITEM_COUNT] = {
-      MODE_KNOWN_POWER, MODE_KNOWN_AE, MODE_KNOWN_WB, MODE_KNOWN_FOCUS, MODE_KNOWN_BACKLIGHT};
+      MODE_KNOWN_POWER, MODE_KNOWN_AE,        MODE_KNOWN_WB,
+      MODE_KNOWN_FOCUS, MODE_KNOWN_BACKLIGHT, MODE_KNOWN_MENU};
   markModeKnown(camNumber, kKnownBits[item]);
 
   // 방금 설정한 항목을 곧바로 되물어 실제로 적용됐는지 확인한다.
   priorityInquiryCam = camNumber;
   priorityInquiryItem = item;
+  priorityInquiryDueMs = millis() + MODE_INQUIRY_SET_VERIFY_DELAY_MS;
+}
+
+// 메뉴를 열고 닫거나 메뉴 안에서 움직이는 명령을 보낸 직후, 메뉴가 아직 열려 있는지
+// 바로 되묻는다. Preset 95는 토글/상위 메뉴라 결과를 짐작할 수 없고, 라운드로빈(항목 6개
+// x 1초)을 기다리면 그사이 ENT/ESC가 옛 상태로 번역된다.
+void scheduleMenuInquiry(uint8_t camNumber) {
+  priorityInquiryCam = camNumber;
+  priorityInquiryItem = MODE_INQUIRY_ITEM_MENU;
   priorityInquiryDueMs = millis() + MODE_INQUIRY_SET_VERIFY_DELAY_MS;
 }
 
@@ -1032,6 +1058,9 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
       uint8_t opcode = (cmnd2 == 0x03) ? 0x01 : (cmnd2 == 0x07) ? 0x02 : 0x00;
       uint8_t buf[7] = {0, 0x01, 0x04, 0x3F, opcode, data2, VISCA_TERMINATOR};
       forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+      // MENU 키 - 카메라가 메뉴를 열었는지 닫았는지 확인해 둬야 뒤따르는 ENT/ESC를
+      // 맞게 번역할 수 있다 (config.h PELCO_MENU_PRESET 참고).
+      if (cmnd2 == 0x07 && data2 == PELCO_MENU_PRESET) scheduleMenuInquiry(camNumber);
       return true;
     }
     if (cmnd2 == 0x51 || cmnd2 == 0x53 || cmnd2 == 0x55) {
@@ -1151,7 +1180,20 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
     acted = true;
   }
 
-  if (focusNear || focusFar) {
+  if ((focusNear || focusFar) && modeCache[camNumber - 1].menuOpen) {
+    // 메뉴가 열려 있으면 NEAR/FAR 키는 ENT/ESC다. ENT -> Sony OSD Enter(하위 메뉴),
+    // ESC -> MENU 키(Preset 95, 상위 메뉴/닫기). config.h PELCO_MENU_PRESET 참고.
+    if (focusNear) {
+      uint8_t buf[8] = {0,    0x01, 0x7E, 0x01, 0x02, 0x00, VISCA_MENU_ENTER_LAST,
+                        VISCA_TERMINATOR};
+      forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+    } else {
+      uint8_t buf[7] = {0, 0x01, 0x04, 0x3F, 0x02, PELCO_MENU_PRESET, VISCA_TERMINATOR};
+      forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
+    }
+    scheduleMenuInquiry(camNumber);
+    acted = true;
+  } else if (focusNear || focusFar) {
     uint8_t buf[6] = {0, 0x01, 0x04, 0x08, (uint8_t)(focusFar ? 0x02 : 0x03), VISCA_TERMINATOR};
     forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
     acted = true;
@@ -1775,11 +1817,15 @@ bool sendModeInquiry(uint8_t camNumber, uint8_t item, const SystemConfig& cfg) {
   CameraSlot* slot = routingTable.camera(camNumber);
   if (slot == nullptr || !slot->isConfigured()) return false;
 
-  // ModeInquiry의 열거 순서(POWER, AE, WB, FOCUS, BACKLIGHT)와 같은 순서여야 한다.
+  // ModeInquiry의 열거 순서(POWER, AE, WB, FOCUS, BACKLIGHT, MENU)와 같은 순서여야 한다.
   // 전부 카메라로 나가는 VISCA 코드다 - WB는 컨트롤러가 쓰는 0x36이 아니라 0x35다.
+  // MENU만 카테고리가 04(카메라)가 아니라 06(Pan-tilt/시스템)이다.
   static const uint8_t kInquiryCodes[MODE_INQUIRY_ITEM_COUNT] = {
-      VISCA_CAM_POWER, 0x39, VISCA_CAM_WB_MODE, VISCA_CAM_FOCUS_AF_MODE, VISCA_CAM_BACKLIGHT};
-  uint8_t buf[5] = {(uint8_t)(VISCA_ADDR_CAM1 + camNumber - 1), 0x09, 0x04,
+      VISCA_CAM_POWER,         0x39,
+      VISCA_CAM_WB_MODE,       VISCA_CAM_FOCUS_AF_MODE,
+      VISCA_CAM_BACKLIGHT,     VISCA_MENU_INQ_CODE};
+  uint8_t category = (item == MODE_INQUIRY_ITEM_MENU) ? VISCA_MENU_INQ_CATEGORY : 0x04;
+  uint8_t buf[5] = {(uint8_t)(VISCA_ADDR_CAM1 + camNumber - 1), 0x09, category,
                     kInquiryCodes[item], VISCA_TERMINATOR};
 
   // 명령과 같은 경로(routingTable.route)를 태워야 슬롯의 Address Mode가 조회에도
@@ -1919,6 +1965,10 @@ bool consumeModeInquiryReply(uint8_t camNumber, const uint8_t* buf, uint8_t len)
     case ModeInquiry::BACKLIGHT:
       c.backlight = buf[2];
       markModeKnown(camNumber, MODE_KNOWN_BACKLIGHT);
+      break;
+    case ModeInquiry::MENU:
+      c.menuOpen = (buf[2] == VISCA_MENU_STATE_ON);
+      markModeKnown(camNumber, MODE_KNOWN_MENU);
       break;
     default: break;
   }
