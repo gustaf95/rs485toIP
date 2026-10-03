@@ -393,13 +393,6 @@ void connectWifi() {
     Serial.print("WiFi connecting to ");
     Serial.print(cfg.wifi.ssid);
   }
-  // 같은 SSID를 쓰는 AP가 둘 이상(공유기 + 증폭기)일 때 **가장 센 신호**에 붙게 한다.
-  // arduino-esp32의 기본은 FAST_SCAN이라 SSID가 맞는 첫 AP에서 스캔을 멈추고 붙는다 -
-  // 그러면 멀리 있는 AP에 붙을 수 있다. 전 채널을 훑고 신호 세기순으로 고르게 하면,
-  // 증폭기 옆에 둔 장치는 증폭기에, 공유기 옆에 둔 장치는 공유기에 붙는다. 이 설정은
-  // 이후 끊겼을 때의 자동 재접속에도 그대로 적용된다(maintainWifi()의 begin 포함).
-  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
-  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
   wifiIsStation = true;
 
