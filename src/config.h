@@ -328,6 +328,27 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 #define WEB_TX_MAX_WAIT_MS 500
 #define WEB_TX_QUEUE_DEPTH 8
 
+// ---------------------------------------------------------------------------
+// Pelco-D 터널 (RS485 <-> IP <-> RS485, src/TunnelBridge.h)
+// ---------------------------------------------------------------------------
+// 터널 양끝이 서로에게 쏘고 받는 UDP 포트. VISCA 소켓(5678)과 **다른 소켓**이어야
+// 한다 - 같은 소켓이면 카메라의 VISCA 응답과 터널 프레임이 뒤섞인다.
+#define TUNNEL_PORT_DEFAULT 5680
+// 터널 양끝이 서로에게 보내는 생존 신호. Pelco-D 프레임은 항상 0xFF로 시작하므로 1바이트
+// 0xFE 패킷은 프레임과 절대 겹치지 않는다.
+#define TUNNEL_HEARTBEAT_BYTE 0xFE
+#define TUNNEL_HEARTBEAT_MS 500
+// 카메라 쪽이 이 시간 동안 컨트롤러 쪽 소식(프레임이나 생존 신호)을 못 들으면, 이동
+// 중이던 카메라에 Stop을 스스로 내보낸다. WiFi가 끊긴 순간 카메라가 계속 도는 걸 막는다.
+#define TUNNEL_FAILSAFE_MS 1500
+// 컨트롤러 쪽이 터널로 명령을 보낸 뒤, 이 시간 안에 돌아온 카메라 프레임만 버스에
+// 올린다. 질문하지 않았는데 버스에 끼어드는 응답은 1/3/4번 카메라 응답과 충돌한다.
+#define TUNNEL_RELAY_WINDOW_MS 300
+// 돌아온 응답이 이보다 오래 버스에 못 올라가면(버스가 계속 바쁨) 버린다. 컨트롤러는
+// 이미 타임아웃을 냈을 것이다.
+#define TUNNEL_RESPONSE_MAX_AGE_MS 100
+#define TUNNEL_MAX_FRAME 32
+
 // 이동/줌/포커스 명령의 유효 기간. 브라우저는 물리 조이스틱과 달리 "손을 놓으면
 // 중심으로 돌아온다"는 보장이 없다 - Wi-Fi가 끊기거나 탭이 죽으면 마지막 이동 명령이
 // 그대로 유지된다(VISCA Pan-tiltDrive는 Stop이 올 때까지 도는 래치 명령이다).

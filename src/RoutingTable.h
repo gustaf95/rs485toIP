@@ -7,7 +7,13 @@
 enum class ProtocolMode : uint8_t {
   IP_VISCA_RAW_UDP = 0,
   IP_VISCA_RAW_TCP = 1,
-  SONY_VISCA_UDP = 2
+  SONY_VISCA_UDP = 2,
+  // 3은 건너뛴다 - 아래 주석 참고.
+  //
+  // Pelco-D 프레임을 번역 없이 그대로 UDP로 실어 나르는 터널. IP는 카메라가 아니라 반대편
+  // 게이트웨이(TunnelBridge)의 주소다. 이 모드의 슬롯은 VISCA 대상이 아니다(isConfigured()
+  // 가 false) - 그래서 VISCA 번역/조회/전원 제어 경로가 이 슬롯을 건드리지 않는다.
+  PELCO_D_TUNNEL = 4
   // 3 = RAW_DATA_UDP (삭제된 Raw Bridge 모드의 피어 슬롯 표시값). **이 값을 재사용하지
   // 않는다** - flash에 남아 있을 수 있어서, 새 프로토콜에 3을 주면 옛 설정이 그 프로토콜로
   // 되살아난다. 로드 시 RoutingTable::sanitizeRemovedFeatures()가 기본값으로 되돌린다.
@@ -92,7 +98,13 @@ struct CameraSlot {
   // false(끔) - 켜면 지금까지의 수동 전원 동작 대신 자동 제어가 그 카메라를 넘겨받는다.
   bool autoPowerControl;
 
-  bool isConfigured() const { return !ip.isZero(); }
+  // IP가 채워져 있는가 (프로토콜과 무관). 화면 표시용.
+  bool hasIp() const { return !ip.isZero(); }
+  // Pelco-D 터널로 중계되는 슬롯인가. IP가 비어 있으면 아직 켜지 않은 것이다.
+  bool isTunnel() const { return protocol == ProtocolMode::PELCO_D_TUNNEL && hasIp(); }
+  // **VISCA로 번역해서 보내는** 대상인가. 터널 슬롯은 제외한다 - 그 IP는 카메라가 아니라
+  // 반대편 게이트웨이라 VISCA를 쏘면 안 된다.
+  bool isConfigured() const { return hasIp() && protocol != ProtocolMode::PELCO_D_TUNNEL; }
 };
 
 struct WifiConfig {
@@ -150,7 +162,20 @@ struct SystemConfig {
   // 그렇고, 보통의 외부 LED는 아니다. 보드가 아니라 배선이 정하는 값이라 컴파일 타임
   // 상수가 아니라 설정 항목이다 (기본값은 STATUS_LED_ACTIVE_LOW_DEFAULT).
   bool statusLedActiveLow;
+
+  // ---- Pelco-D 터널 (TunnelBridge) ----
+  // 0 = 컨트롤러 쪽(기본): 버스에서 터널 슬롯 주소의 프레임을 IP로 보낸다.
+  // 1 = 카메라 쪽: 카메라가 물린 RS485를 IP와 이어준다. 이 역할이면 번역/라우팅은 하지
+  //     않고 터널만 한다.
+  uint8_t tunnelRole;
+  uint16_t tunnelPort;
+  // 카메라 쪽 역할이 프레임을 보내고 받을 상대(컨트롤러 쪽 게이트웨이) 주소.
+  // 컨트롤러 쪽은 슬롯의 IP를 쓰므로 이 필드를 보지 않는다.
+  StoredIp tunnelPeer;
 };
+
+constexpr uint8_t kTunnelRoleController = 0;
+constexpr uint8_t kTunnelRoleCamera = 1;
 
 struct RoutedPacket {
   CameraSlot* slot;

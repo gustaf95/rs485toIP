@@ -186,6 +186,14 @@ void serializeConfig(const SystemConfig& cfg, String& out) {
   out += "# response_mode: 0=none 1=synthetic 2=forward 3=forward+rewrite\n";
   appendNum(out, "rs485.response_mode", (uint32_t)cfg.responseMode);
 
+  out += "\n# ---- Pelco-D tunnel (RS485 <-> IP <-> RS485) ----\n";
+  out += "# role: 0 = controller side (forwards tunnel-slot frames from the bus to the\n";
+  out += "# camera-side gateway), 1 = camera side (bridges its RS485 to the controller side)\n";
+  appendNum(out, "tunnel.role", cfg.tunnelRole);
+  appendNum(out, "tunnel.port", cfg.tunnelPort);
+  out += "# peer: the controller-side gateway (used by the camera side only)\n";
+  appendIp(out, "tunnel.peer", cfg.tunnelPeer);
+
   out += "\n# ---- Status LED ----\n";
   appendNum(out, "led.pin", cfg.statusLedPin);
   out += "# active_low: 1 = LOW lights the LED (the C3 Super Mini's on-board one).\n";
@@ -199,6 +207,7 @@ void serializeConfig(const SystemConfig& cfg, String& out) {
   out += "\n# ---- Cameras ----\n";
   out += "# ip=0.0.0.0 leaves the slot unused.\n";
   out += "# protocol: 0=IP VISCA raw/UDP 1=IP VISCA raw/TCP 2=Sony VISCA over IP/UDP\n";
+  out += "#           4=Pelco-D tunnel (ip = the camera-side gateway, not a camera)\n";
   out += "# address_mode: 0=rewrite to 0x81 1=preserve 2=rewrite by camera number\n";
   out += "# auto_power: 1 = follow RS485 bus activity (power on / standby)\n";
 
@@ -410,6 +419,31 @@ ConfigRestoreResult restoreConfig(const String& text, SystemConfig& cfg) {
         note(where + "expected 0..3.");
       }
 
+      // ---- Pelco-D tunnel ----
+    } else if (key == "tunnel.role") {
+      if (parseUint(value, kTunnelRoleCamera, &num)) {
+        work.tunnelRole = (uint8_t)num;
+        result.applied++;
+      } else {
+        result.skipped++;
+        note(where + "expected 0 (controller side) or 1 (camera side).");
+      }
+    } else if (key == "tunnel.port") {
+      if (parseUint(value, 65535, &num) && num > 0) {
+        work.tunnelPort = (uint16_t)num;
+        result.applied++;
+      } else {
+        result.skipped++;
+        note(where + "expected a port between 1 and 65535.");
+      }
+    } else if (key == "tunnel.peer") {
+      if (parseIp(value, &work.tunnelPeer)) {
+        result.applied++;
+      } else {
+        result.skipped++;
+        note(where + "not an IPv4 address.");
+      }
+
       // ---- Status LED / Debug ----
     } else if (key == "led.active_low") {
       if (parseBool(value, &flag)) {
@@ -456,13 +490,14 @@ ConfigRestoreResult restoreConfig(const String& text, SystemConfig& cfg) {
           note(where + "expected a port between 1 and 65535.");
         }
       } else if (field == "protocol") {
-        // 삭제된 RAW_DATA_UDP(3)를 걸러내려고 상한을 둔다 (RoutingTable.h 참고).
-        if (parseUint(value, (uint32_t)ProtocolMode::SONY_VISCA_UDP, &num)) {
+        // 삭제된 RAW_DATA_UDP(3)를 걸러낸다 (RoutingTable.h 참고).
+        if (parseUint(value, (uint32_t)ProtocolMode::PELCO_D_TUNNEL, &num) &&
+            num != kRemovedProtocolRawDataUdp) {
           slot.protocol = (ProtocolMode)num;
           result.applied++;
         } else {
           result.skipped++;
-          note(where + "expected 0..2.");
+          note(where + "expected 0, 1, 2 or 4.");
         }
       } else if (field == "address_mode") {
         if (parseUint(value, (uint32_t)AddressMode::REWRITE_BY_CAM, &num)) {

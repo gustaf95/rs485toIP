@@ -4,6 +4,7 @@
 #include "FirmwareVersion.h"
 #include "Rs485PinValidation.h"
 #include "GatewayActions.h"
+#include "TunnelBridge.h"
 
 namespace {
 // 한 줄 입력의 최대 길이. 메뉴에서 가장 긴 입력이 Wi-Fi 비밀번호(63자)라 넉넉하다.
@@ -15,6 +16,7 @@ String SerialMenu::protocolName(ProtocolMode mode) {
     case ProtocolMode::IP_VISCA_RAW_UDP: return "IP_VISCA_RAW_UDP";
     case ProtocolMode::IP_VISCA_RAW_TCP: return "IP_VISCA_RAW_TCP";
     case ProtocolMode::SONY_VISCA_UDP: return "SONY_VISCA_UDP";
+    case ProtocolMode::PELCO_D_TUNNEL: return "PELCO_D_TUNNEL";
   }
   return "?";
 }
@@ -128,6 +130,7 @@ void SerialMenu::handleLine(const String& line) {
     case Screen::ROUTING: handleRoutingMenu(line); break;
     case Screen::CAMERA_DETAIL: handleCameraDetailMenu(line); break;
     case Screen::COUNTERS: handleCountersMenu(line); break;
+    case Screen::TUNNEL: handleTunnelMenu(line); break;
     case Screen::DEBUG: handleDebugMenu(line); break;
     case Screen::DEBUG_LIVE: handleDebugLiveMenu(line); break;
     case Screen::DEBUG_RAW: handleDebugRawMenu(line); break;
@@ -138,8 +141,66 @@ void SerialMenu::handleLine(const String& line) {
 // Main menu
 // ---------------------------------------------------------------------------
 
+void SerialMenu::printCameraSideMainMenu() {
+  SystemConfig& cfg = _routing.get();
+  bool connected = WiFi.status() == WL_CONNECTED;
+
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println(" Pelco-D Tunnel - CAMERA SIDE (RS485 <-> IP)");
+  Serial.print(" Firmware : ");
+  Serial.println(firmwareVersion());
+  Serial.print(" Board    : ");
+  Serial.println(BOARD_NAME);
+  Serial.println("============================================================");
+  Serial.println();
+  Serial.println("[STATUS]");
+  Serial.print("  Wi-Fi            : ");
+  Serial.println(connected ? "Connected" : "Disconnected");
+  Serial.print("  ESP32 IP         : ");
+  Serial.println(connected ? WiFi.localIP().toString() : "Not assigned");
+  Serial.print("  Tunnel Peer      : ");
+  Serial.println(cfg.tunnelPeer.isZero() ? "(not set)" : cfg.tunnelPeer.toIPAddress().toString());
+  Serial.println();
+  Serial.println("------------------------------------------------------------");
+  Serial.println(" Main Menu");
+  Serial.println("------------------------------------------------------------");
+  Serial.println("  1. Network Settings");
+  Serial.println("  2. RS485 Settings");
+  Serial.println("  3. Tunnel Settings / Status");
+  Serial.println("  4. Factory Reset");
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.print("Select menu number: ");
+}
+
+void SerialMenu::handleCameraSideMainMenu(const String& line) {
+  if (line == "1") {
+    _screen = Screen::NETWORK;
+    printNetworkMenu();
+  } else if (line == "2") {
+    _screen = Screen::RS485;
+    printRs485Menu();
+  } else if (line == "3") {
+    _screen = Screen::TUNNEL;
+    printTunnelMenu();
+  } else if (line == "4") {
+    Serial.println();
+    Serial.println("WARNING: This erases ALL settings and restores factory defaults, then");
+    Serial.println("reboots (the tunnel role goes back to Controller side).");
+    Serial.print("Type YES to confirm, or press Enter to cancel: ");
+    _prompt = Prompt::FACTORY_RESET_CONFIRM;
+  } else {
+    printMainMenu();
+  }
+}
+
 void SerialMenu::printMainMenu() {
   SystemConfig& cfg = _routing.get();
+  if (cfg.tunnelRole == kTunnelRoleCamera) {
+    printCameraSideMainMenu();
+    return;
+  }
   bool connected = WiFi.status() == WL_CONNECTED;
 
   Serial.println();
@@ -173,13 +234,21 @@ void SerialMenu::printMainMenu() {
   Serial.println("  4. Counters");
   Serial.println("  5. Debug Mode");
   Serial.println("  6. Factory Reset");
+  Serial.println("  7. Tunnel Settings / Status");
   Serial.println();
   Serial.println("============================================================");
   Serial.print("Select menu number: ");
 }
 
 void SerialMenu::handleMainMenu(const String& line) {
-  if (line == "1") {
+  if (_routing.get().tunnelRole == kTunnelRoleCamera) {
+    handleCameraSideMainMenu(line);
+    return;
+  }
+  if (line == "7") {
+    _screen = Screen::TUNNEL;
+    printTunnelMenu();
+  } else if (line == "1") {
     _screen = Screen::NETWORK;
     printNetworkMenu();
   } else if (line == "2") {
@@ -420,12 +489,16 @@ void SerialMenu::printRs485Menu() {
   Serial.print("  Signal Inversion : ");
   Serial.println(cfg.rs485Invert ? "Inverted (A/B swapped wiring)" : "Normal");
   Serial.println("  Default Mode     : Receive");
-  Serial.print("  Input Protocol   : ");
-  Serial.println(inputProtocolName(cfg.inputProtocol));
-  Serial.print("  Pelco Response   : ");
-  Serial.println(pelcoResponseModeName(cfg.pelcoResponseMode));
-  Serial.print("  Camera Response  : ");
-  Serial.println(responseModeName(cfg.responseMode));
+  const bool cameraSide = (cfg.tunnelRole == kTunnelRoleCamera);
+  // 카메라 쪽 터널은 번역을 하지 않으므로 입력 프로토콜/응답 모드는 의미가 없다.
+  if (!cameraSide) {
+    Serial.print("  Input Protocol   : ");
+    Serial.println(inputProtocolName(cfg.inputProtocol));
+    Serial.print("  Pelco Response   : ");
+    Serial.println(pelcoResponseModeName(cfg.pelcoResponseMode));
+    Serial.print("  Camera Response  : ");
+    Serial.println(responseModeName(cfg.responseMode));
+  }
   Serial.print("  Status LED Pin   : GPIO");
   Serial.println(cfg.statusLedPin);
   Serial.print("  Status LED Logic : ");
@@ -439,11 +512,13 @@ void SerialMenu::printRs485Menu() {
   Serial.println("  2. Set RX Pin");
   Serial.println("  3. Set TX Pin");
   Serial.println("  4. Set DE/RE Pin");
-  Serial.println("  5. Set Input Protocol");
-  Serial.println("  6. Set Pelco Response Mode");
+  if (!cameraSide) {
+    Serial.println("  5. Set Input Protocol");
+    Serial.println("  6. Set Pelco Response Mode");
+  }
   Serial.println("  7. Set Status LED Pin");
   Serial.println("  8. Set Signal Inversion");
-  Serial.println("  9. Set Camera Response Mode");
+  if (!cameraSide) Serial.println("  9. Set Camera Response Mode");
   // 숫자가 다 찼다. 항목을 다시 번호 매기면 기존 사용자의 손에 익은 순서가 흐트러지고
   // readme의 메뉴 캡처도 전부 어긋나므로, 새 항목만 문자로 붙인다.
   Serial.println("  a. Set Status LED Polarity");
@@ -498,6 +573,12 @@ void SerialMenu::applyRs485Settings(const SystemConfig& cfg) {
 }
 
 void SerialMenu::handleRs485Menu(const String& line) {
+  // 카메라 쪽 터널에는 5/6/9번(번역 관련)이 메뉴에 없다 - 눌러도 동작하지 않게 막는다.
+  if (_routing.get().tunnelRole == kTunnelRoleCamera &&
+      (line == "5" || line == "6" || line == "9")) {
+    printRs485Menu();
+    return;
+  }
   if (line == "1") {
     for (uint8_t i = 0; i < RS485_BAUD_CHOICE_COUNT; i++) {
       Serial.print(i + 1);
@@ -582,7 +663,7 @@ void SerialMenu::printRoutingMenu() {
   for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
     CameraSlot* slot = _routing.camera(camNumber);
     char line[96];
-    String ip = slot->isConfigured() ? slot->ip.toIPAddress().toString() : "-";
+    String ip = slot->hasIp() ? slot->ip.toIPAddress().toString() : "-";
     snprintf(line, sizeof(line), "   %d  | 0x%02X  | %-15s | %-4u | %-17s | %s", camNumber,
              0x80 | camNumber, ip.c_str(), slot->port, protocolName(slot->protocol).c_str(),
              addressModeName(slot->addressMode).c_str());
@@ -626,7 +707,7 @@ void SerialMenu::printCameraDetailMenu() {
   Serial.print("  VISCA Address    : 0x");
   Serial.println(0x80 | _pendingCamNumber, HEX);
   Serial.print("  Camera IP        : ");
-  Serial.println(slot->isConfigured() ? slot->ip.toIPAddress().toString() : "(not set)");
+  Serial.println(slot->hasIp() ? slot->ip.toIPAddress().toString() : "(not set)");
   Serial.print("  Port             : ");
   Serial.println(slot->port);
   Serial.print("  Protocol         : ");
@@ -665,6 +746,7 @@ void SerialMenu::handleCameraDetailMenu(const String& line) {
     Serial.println("1. IP_VISCA_RAW_UDP");
     Serial.println("2. IP_VISCA_RAW_TCP");
     Serial.println("3. SONY_VISCA_UDP");
+    Serial.println("4. PELCO_D_TUNNEL (IP = camera-side gateway, frames passed through)");
     Serial.print("> ");
     _prompt = Prompt::ROUTING_SET_PROTOCOL_VALUE;
   } else if (line == "5") {
@@ -685,6 +767,100 @@ void SerialMenu::handleCameraDetailMenu(const String& line) {
     printRoutingMenu();
   } else {
     printCameraDetailMenu();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tunnel Settings / Status
+// ---------------------------------------------------------------------------
+
+void SerialMenu::printTunnelMenu() {
+  SystemConfig& cfg = _routing.get();
+  const TunnelBridge::Stats& st = tunnelBridge.stats();
+  const bool cameraSide = (cfg.tunnelRole == kTunnelRoleCamera);
+
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println(" Tunnel Settings / Status");
+  Serial.println("============================================================");
+  Serial.println();
+  Serial.print("  Role             : ");
+  Serial.println(cameraSide ? "Camera side (RS485 to the camera)"
+                            : "Controller side (on the controller RS485 bus)");
+  Serial.print("  UDP Port         : ");
+  Serial.println(cfg.tunnelPort);
+  if (cameraSide) {
+    Serial.print("  Peer IP          : ");
+    Serial.println(cfg.tunnelPeer.isZero() ? "(not set)" : cfg.tunnelPeer.toIPAddress().toString());
+  } else {
+    Serial.println("  Peer IP          : per camera slot (Routing Table, protocol PELCO_D_TUNNEL)");
+    for (uint8_t n = 1; n <= CAMERA_SLOT_COUNT; n++) {
+      const CameraSlot* slot = _routing.camera(n);
+      if (!slot->isTunnel()) continue;
+      Serial.print("    CAM");
+      Serial.print(n);
+      Serial.print(" -> ");
+      Serial.println(slot->ip.toIPAddress().toString());
+    }
+  }
+  // 어느 AP(공유기/증폭기)에 붙었는지 - 같은 SSID여도 BSSID가 다르다.
+  Serial.print("  Wi-Fi AP (BSSID) : ");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print(WiFi.BSSIDstr());
+    Serial.print("  ch ");
+    Serial.print(WiFi.channel());
+    Serial.print("  ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+  } else {
+    Serial.println("not connected");
+  }
+  Serial.print("  Last heard       : ");
+  if (st.lastPeerMs == 0) {
+    Serial.println("never");
+  } else {
+    Serial.print((millis() - st.lastPeerMs) / 1000);
+    Serial.println(" s ago");
+  }
+  Serial.print("  Frames to peer   : "); Serial.println(st.txFrames);
+  Serial.print("  Frames from peer : "); Serial.println(st.rxFrames);
+  if (cameraSide) {
+    Serial.print("  Failsafe Stops   : "); Serial.println(st.failsafeStops);
+  } else {
+    Serial.print("  Responses relayed: "); Serial.println(st.relayed);
+    Serial.print("  Dropped (no cmd) : "); Serial.println(st.droppedUnsolicited);
+    Serial.print("  Dropped (stale)  : "); Serial.println(st.droppedStale);
+  }
+  Serial.print("  Uptime           : "); Serial.println(_diagnostics.uptimeString());
+  Serial.println();
+  Serial.println("------------------------------------------------------------");
+  Serial.println(" Options");
+  Serial.println("------------------------------------------------------------");
+  Serial.println("  1. Set Role");
+  Serial.println("  2. Set UDP Port");
+  if (cameraSide) Serial.println("  3. Set Peer IP (controller-side gateway)");
+  Serial.println("  0. Back to Main Menu");
+  Serial.println("  (Press Enter with no input to refresh)");
+  Serial.print("> ");
+}
+
+void SerialMenu::handleTunnelMenu(const String& line) {
+  if (line == "1") {
+    Serial.println("1. Controller side (on the controller RS485 bus)");
+    Serial.println("2. Camera side (RS485 to the camera; menus shrink to the essentials)");
+    Serial.print("> ");
+    _prompt = Prompt::TUNNEL_ROLE_CHOICE;
+  } else if (line == "2") {
+    Serial.print("Enter UDP Port (blank to cancel): ");
+    _prompt = Prompt::TUNNEL_PORT_VALUE;
+  } else if (line == "3" && _routing.get().tunnelRole == kTunnelRoleCamera) {
+    Serial.print("Enter Peer IP (blank to clear): ");
+    _prompt = Prompt::TUNNEL_PEER_VALUE;
+  } else if (line == "0") {
+    _screen = Screen::MAIN;
+    printMainMenu();
+  } else {
+    printTunnelMenu();
   }
 }
 
@@ -1177,8 +1353,10 @@ void SerialMenu::handlePrompt(const String& line) {
     }
     case Prompt::ROUTING_SET_PROTOCOL_VALUE: {
       int choice = line.toInt();
-      if (choice >= 1 && choice <= 3) {
-        _routing.camera(_pendingCamNumber)->protocol = (ProtocolMode)(choice - 1);
+      if (choice >= 1 && choice <= 4) {
+        // 메뉴 번호 4 = 터널(값 4). 값 3은 삭제된 RAW_DATA_UDP라 건너뛴다.
+        _routing.camera(_pendingCamNumber)->protocol =
+            (choice == 4) ? ProtocolMode::PELCO_D_TUNNEL : (ProtocolMode)(choice - 1);
         _storage.save(cfg);
         Serial.println("Protocol set and saved to flash.");
         printCameraDetailMenu();
@@ -1198,6 +1376,64 @@ void SerialMenu::handlePrompt(const String& line) {
       } else {
         Serial.println("Invalid choice.");
         printCameraDetailMenu();
+      }
+      break;
+    }
+    case Prompt::TUNNEL_ROLE_CHOICE: {
+      if (line == "1" || line == "2") {
+        // 역할은 loop()가 매번 읽으므로 재부팅 없이 바로 바뀐다.
+        cfg.tunnelRole = (line == "2") ? kTunnelRoleCamera : kTunnelRoleController;
+        _storage.save(cfg);
+        Serial.println(line == "2" ? "Role set to Camera side and saved to flash."
+                                   : "Role set to Controller side and saved to flash.");
+        if (line == "2" && cfg.tunnelPeer.isZero()) {
+          Serial.println("Next: set the Peer IP (the controller-side gateway).");
+        }
+        // 메인 메뉴가 역할에 따라 달라지므로, 호출한 화면 대신 새 메인 메뉴로 돌아간다.
+        _screen = Screen::MAIN;
+        printMainMenu();
+      } else {
+        Serial.println("Invalid choice.");
+        printTunnelMenu();
+      }
+      break;
+    }
+    case Prompt::TUNNEL_PORT_VALUE: {
+      if (line.length() == 0) {
+        Serial.println("Cancelled.");
+        printTunnelMenu();
+        break;
+      }
+      int port = line.toInt();
+      if (port > 0 && port <= 65535) {
+        cfg.tunnelPort = (uint16_t)port;
+        _storage.save(cfg);
+        tunnelBridge.begin(cfg.tunnelPort);  // 소켓을 새 포트로 다시 연다
+        Serial.println("Tunnel port set and saved to flash. The peer must use the same port.");
+        printTunnelMenu();
+      } else {
+        Serial.print("Invalid port, try again (blank to cancel): ");
+        _prompt = Prompt::TUNNEL_PORT_VALUE;
+      }
+      break;
+    }
+    case Prompt::TUNNEL_PEER_VALUE: {
+      if (line.length() == 0) {
+        cfg.tunnelPeer.fromIPAddress(IPAddress(0, 0, 0, 0));
+        _storage.save(cfg);
+        Serial.println("Peer IP cleared and saved to flash.");
+        printTunnelMenu();
+        break;
+      }
+      IPAddress ip;
+      if (ip.fromString(line)) {
+        cfg.tunnelPeer.fromIPAddress(ip);
+        _storage.save(cfg);
+        Serial.println("Peer IP set and saved to flash.");
+        printTunnelMenu();
+      } else {
+        Serial.print("Invalid IP, try again (blank to clear): ");
+        _prompt = Prompt::TUNNEL_PEER_VALUE;
       }
       break;
     }

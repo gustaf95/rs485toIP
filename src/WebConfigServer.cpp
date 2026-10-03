@@ -1,4 +1,5 @@
 #include "WebConfigServer.h"
+#include "TunnelBridge.h"
 #include <Update.h>
 #include <WiFi.h>
 #include <esp_app_format.h>
@@ -538,6 +539,22 @@ String WebConfigServer::rs485PageBody(const String& error) {
                "Active Low (LOW = on) - ESP32-C3 Super Mini onboard LED (GPIO8)");
   body += "</select></label>";
 
+  body += "<h3>Pelco-D Tunnel (RS485 over IP)</h3>";
+  body += "<label>Tunnel Role: <select name=\"tunnel_role\">";
+  appendOption(body, kTunnelRoleController, cfg.tunnelRole,
+               "Controller side (on the controller RS485 bus)");
+  appendOption(body, kTunnelRoleCamera, cfg.tunnelRole,
+               "Camera side (RS485 to the camera; no translation)");
+  body += "</select></label>";
+  body += "<label>Tunnel UDP Port: <input type=\"number\" name=\"tunnel_port\" value=\"" +
+          String(cfg.tunnelPort) + "\"></label>";
+  body += "<label>Tunnel Peer IP (camera side only - the controller-side gateway): "
+          "<input type=\"text\" name=\"tunnel_peer\" value=\"" +
+          (cfg.tunnelPeer.isZero() ? String("") : cfg.tunnelPeer.toIPAddress().toString()) +
+          "\"></label>";
+  body += "<p><i>Controller side: set a camera slot protocol to PELCO_D_TUNNEL and its IP to the "
+          "camera-side gateway. Changes apply immediately.</i></p>";
+
   body += "<button type=\"submit\">Save</button></form>";
 
   return body;
@@ -587,6 +604,24 @@ void WebConfigServer::handleRs485Post() {
   cfg.statusLedPin = (uint8_t)ledPin;
   cfg.statusLedActiveLow = (_server.arg("led_active_low").toInt() != 0);
 
+  if (_server.hasArg("tunnel_role")) {
+    cfg.tunnelRole = (_server.arg("tunnel_role").toInt() == kTunnelRoleCamera) ? kTunnelRoleCamera
+                                                                              : kTunnelRoleController;
+    int tunnelPort = _server.arg("tunnel_port").toInt();
+    if (tunnelPort > 0 && tunnelPort <= 65535 && cfg.tunnelPort != (uint16_t)tunnelPort) {
+      cfg.tunnelPort = (uint16_t)tunnelPort;
+      tunnelBridge.begin(cfg.tunnelPort);  // 소켓을 새 포트로 다시 연다
+    }
+    String peerStr = _server.arg("tunnel_peer");
+    peerStr.trim();
+    if (peerStr.length() == 0) {
+      cfg.tunnelPeer.fromIPAddress(IPAddress(0, 0, 0, 0));
+    } else {
+      IPAddress peer;
+      if (peer.fromString(peerStr)) cfg.tunnelPeer.fromIPAddress(peer);
+    }
+  }
+
   _storage.save(cfg);
   _rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
                cfg.rs485Invert);
@@ -607,7 +642,8 @@ void WebConfigServer::handleRs485Post() {
 // ---------------------------------------------------------------------------
 
 void WebConfigServer::handleRoutingGet() {
-  static const char* kProtocolNames[] = {"IP_VISCA_RAW_UDP", "IP_VISCA_RAW_TCP", "SONY_VISCA_UDP"};
+  static const char* kProtocolNames[] = {"IP_VISCA_RAW_UDP", "IP_VISCA_RAW_TCP", "SONY_VISCA_UDP",
+                                         "?", "PELCO_D_TUNNEL"};
   static const char* kAddrModeNames[] = {"rewrite_0x81", "preserve", "rewrite_by_cam"};
 
   String body = "<table><tr><th>CAM</th><th>VISCA Addr</th><th>IP</th><th>Port</th>"
@@ -616,7 +652,7 @@ void WebConfigServer::handleRoutingGet() {
     CameraSlot* slot = _routing.camera(n);
     body += "<tr><td><a href=\"/routing/cam?n=" + String(n) + "\">CAM" + String(n) + "</a></td>";
     body += "<td>0x" + String(0x80 | n, HEX) + "</td>";
-    body += "<td>" + (slot->isConfigured() ? slot->ip.toIPAddress().toString() : String("-")) + "</td>";
+    body += "<td>" + (slot->hasIp() ? slot->ip.toIPAddress().toString() : String("-")) + "</td>";
     body += "<td>" + String(slot->port) + "</td>";
     body += "<td>" + String(kProtocolNames[(int)slot->protocol]) + "</td>";
     body += "<td>" + String(kAddrModeNames[(int)slot->addressMode]) + "</td>";
@@ -639,7 +675,7 @@ void WebConfigServer::handleRoutingCamGet() {
   body += "<form method=\"POST\" action=\"/routing/cam\">";
   body += "<input type=\"hidden\" name=\"n\" value=\"" + String(n) + "\">";
   body += "<label>Camera IP (blank to clear): <input type=\"text\" name=\"ip\" value=\"" +
-          (slot->isConfigured() ? slot->ip.toIPAddress().toString() : String("")) + "\"></label>";
+          (slot->hasIp() ? slot->ip.toIPAddress().toString() : String("")) + "\"></label>";
   body += "<label>Port: <input type=\"number\" name=\"port\" value=\"" + String(slot->port) +
           "\"></label>";
 
@@ -647,6 +683,8 @@ void WebConfigServer::handleRoutingCamGet() {
   appendOption(body, 0, (int)slot->protocol, "IP_VISCA_RAW_UDP");
   appendOption(body, 1, (int)slot->protocol, "IP_VISCA_RAW_TCP");
   appendOption(body, 2, (int)slot->protocol, "SONY_VISCA_UDP");
+  appendOption(body, 4, (int)slot->protocol,
+               "PELCO_D_TUNNEL (IP = camera-side gateway; Pelco-D passed through as-is)");
   body += "</select></label>";
 
   body += "<label>Address Mode: <select name=\"address_mode\">";
@@ -691,7 +729,8 @@ void WebConfigServer::handleRoutingCamPost() {
   // 삭제된 RAW_DATA_UDP(3)가 POST로 다시 들어오지 않도록 범위를 확인한다
   // (handleRs485Post()의 input_protocol과 같은 이유).
   int protocol = _server.arg("protocol").toInt();
-  if (protocol >= 0 && protocol <= (int)ProtocolMode::SONY_VISCA_UDP) {
+  if ((protocol >= 0 && protocol <= (int)ProtocolMode::SONY_VISCA_UDP) ||
+      protocol == (int)ProtocolMode::PELCO_D_TUNNEL) {
     slot->protocol = (ProtocolMode)protocol;
   }
   slot->addressMode = (AddressMode)_server.arg("address_mode").toInt();

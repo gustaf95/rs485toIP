@@ -45,6 +45,7 @@ class SerialMenu {
     ROUTING,
     CAMERA_DETAIL,
     COUNTERS,
+    TUNNEL,
     DEBUG,
     DEBUG_LIVE,
     DEBUG_RAW
@@ -74,6 +75,9 @@ class SerialMenu {
     ROUTING_SET_PORT_VALUE,
     ROUTING_SET_PROTOCOL_VALUE,
     ROUTING_SET_ADDRMODE_VALUE,
+    TUNNEL_ROLE_CHOICE,
+    TUNNEL_PORT_VALUE,
+    TUNNEL_PEER_VALUE,
     FACTORY_RESET_CONFIRM,
     DEBUG_TEST_CMD_PROTOCOL_CHOICE
   };
@@ -108,6 +112,7 @@ class SerialMenu {
   void handleRoutingMenu(const String& line);
   void handleCameraDetailMenu(const String& line);
   void handleCountersMenu(const String& line);
+  void handleTunnelMenu(const String& line);
   void handleDebugMenu(const String& line);
   void handleDebugLiveMenu(const String& line);
   void handleDebugRawMenu(const String& line);
@@ -123,6 +128,10 @@ class SerialMenu {
   void printPinWarning(uint8_t pin);
 
   void printMainMenu();
+  // 카메라 쪽 터널 역할일 때의 최소 메인 메뉴. 번호 배치가 컨트롤러 쪽 메뉴와 달라서
+  // 핸들러도 따로 둔다.
+  void printCameraSideMainMenu();
+  void handleCameraSideMainMenu(const String& line);
   void printNetworkMenu();
   void printIpModeMenu();
   void printStaticIpMenu();
@@ -130,6 +139,7 @@ class SerialMenu {
   void printRoutingMenu();
   void printCameraDetailMenu();
   void printCountersMenu();
+  void printTunnelMenu();
   void printDebugMenu();
   void printDebugLiveMenu();
   void printDebugRawMenu();

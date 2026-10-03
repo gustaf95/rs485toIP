@@ -43,6 +43,14 @@ void RoutingTable::applyDefaults() {
     slot.addressMode = AddressMode::PRESERVE;
     slot.autoPowerControl = false;
   }
+
+  // 기본 구성: 컨트롤러 쪽 게이트웨이이고, 카메라 2번(EDIS)만 터널로 중계한다. IP가
+  // 비어 있는 동안은 꺼져 있다 - 카메라 쪽 게이트웨이 IP를 넣는 순간 켜진다. 나머지
+  // 슬롯은 그대로(1/3/4는 유선 버스, 6은 FoMaKo VISCA).
+  _config.cameras[1].protocol = ProtocolMode::PELCO_D_TUNNEL;
+  _config.tunnelRole = kTunnelRoleController;
+  _config.tunnelPort = TUNNEL_PORT_DEFAULT;
+  _config.tunnelPeer = {{0, 0, 0, 0}};
 }
 
 bool RoutingTable::sanitizeRemovedFeatures() {

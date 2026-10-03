@@ -15,6 +15,7 @@
 #include "WebConfigServer.h"
 #include "WebControl.h"
 #include "StatusLed.h"
+#include "TunnelBridge.h"
 
 void connectWifi();
 
@@ -317,6 +318,14 @@ void pollWebRs485Tx() {
   webTxHead = (webTxHead + 1) % WEB_TX_QUEUE_DEPTH;
   webTxCount--;
 
+  // 터널 슬롯 주소의 프레임은 이 버스에 카메라가 없다 - 터널로 내보낸다.
+  CameraSlot* tunnelSlot = routingTable.camera(frame[1]);
+  if (tunnelSlot != nullptr && tunnelSlot->isTunnel()) {
+    tunnelBridge.forwardFromBus(*tunnelSlot, frame, PELCO_D_PACKET_LEN);
+    diagnostics.recordWebTx();
+    return;
+  }
+
   rs485.writePacket(frame, PELCO_D_PACKET_LEN);
   diagnostics.recordWebTx();
 
@@ -331,6 +340,7 @@ const char* protocolTag(ProtocolMode mode) {
     case ProtocolMode::IP_VISCA_RAW_UDP: return "UDP";
     case ProtocolMode::IP_VISCA_RAW_TCP: return "TCP";
     case ProtocolMode::SONY_VISCA_UDP: return "SONY_UDP";
+    case ProtocolMode::PELCO_D_TUNNEL: return "TUNNEL";
   }
   return "?";
 }
@@ -367,6 +377,13 @@ void connectWifi() {
     Serial.print("WiFi connecting to ");
     Serial.print(cfg.wifi.ssid);
   }
+  // 같은 SSID를 쓰는 AP가 둘 이상(공유기 + 증폭기)일 때 **가장 센 신호**에 붙게 한다.
+  // arduino-esp32의 기본은 FAST_SCAN이라 SSID가 맞는 첫 AP에서 스캔을 멈추고 붙는다 -
+  // 그러면 멀리 있는 AP에 붙을 수 있다. 전 채널을 훑고 신호 세기순으로 고르게 하면,
+  // 증폭기 옆에 둔 장치는 증폭기에, 공유기 옆에 둔 장치는 공유기에 붙는다. 이 설정은
+  // 이후 끊겼을 때의 자동 재접속에도 그대로 적용된다(maintainWifi()의 begin 포함).
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
   wifiIsStation = true;
 
@@ -454,6 +471,8 @@ bool sendToCamera(const CameraSlot& slot, const uint8_t* data, uint8_t len) {
       return ipViscaClient.sendTcp(ip, slot.port, data, len);
     case ProtocolMode::SONY_VISCA_UDP:
       return sonyViscaClient.send(ip, slot.port, data, len);
+    case ProtocolMode::PELCO_D_TUNNEL:
+      return false;  // VISCA 대상이 아니다 (CameraSlot::isConfigured()가 이미 걸러낸다)
   }
   return false;
 }
@@ -1325,6 +1344,17 @@ void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
     return;
   }
 
+  // 터널 슬롯: 번역하지 않고 원본 프레임을 반대편 게이트웨이로 보낸다. 합성 ACK도 보내지
+  // 않는다 - 응답은 진짜 카메라가 하고, 그걸 TunnelBridge가 버스로 되돌려 올린다.
+  if (slot->isTunnel()) {
+    tunnelBridge.forwardFromBus(*slot, data, len);
+    if (cfg.debugMode) {
+      Serial.print("[TUNNEL ->] CAM");
+      Serial.println(camNumber);
+    }
+    return;
+  }
+
   bool needsAck = translatePelcoAndForward(camNumber, data[2], data[3], data[4], data[5],
                                           /*isPelcoP=*/false, data, len, "PELCO-D");
 
@@ -2152,6 +2182,21 @@ WebControl webControl(webExecuteCommand, webStateJson);
 WebConfigServer webConfigServer(routingTable, storage, diagnostics, rs485, statusLed, connectWifi,
                                  webControl);
 
+bool anyTunnelSlot(const SystemConfig& cfg) {
+  for (uint8_t i = 0; i < CAMERA_SLOT_COUNT; i++) {
+    if (cfg.cameras[i].isTunnel()) return true;
+  }
+  return false;
+}
+
+// 터널로 돌아온 카메라 응답을 버스에 올린 뒤 불린다. 컨트롤러와 같은 방식으로 웹 화면의
+// 상태 캐시에 반영한다 - 버스에 다른 ED-P가 있는 것과 똑같이 취급하면 된다.
+void onTunnelRelayed(const uint8_t* frame, uint8_t len) {
+  if (len == PELCO_D_PACKET_LEN && frame[0] == PELCO_D_START_BYTE) {
+    sniffBusFrame(frame[1], frame[2], frame[3], frame[4], frame[5]);
+  }
+}
+
 void setup() {
   routingTable.applyDefaults();
   bool configUpgraded = false;
@@ -2215,6 +2260,11 @@ void setup() {
   ipViscaClient.begin(DEFAULT_CAMERA_PORT);
   sonyViscaClient.begin();
 
+  // 터널 소켓은 VISCA 소켓과 별개다. 터널을 안 쓰는 장비에서도 열어두지만, 아무도 이
+  // 포트로 보내지 않으면 수신 큐에 쌓일 것이 없다.
+  tunnelBridge.begin(cfg.tunnelPort);
+  tunnelBridge.setRelayedHook(onTunnelRelayed);
+
   serialMenu.begin();
   webConfigServer.begin();
 }
@@ -2229,6 +2279,13 @@ void loop() {
   statusLed.update(WiFi.status() == WL_CONNECTED);
 
   SystemConfig& cfg = routingTable.get();
+
+  // 카메라 쪽 터널 역할: RS485에는 카메라 하나만 있고 번역도 라우팅도 필요 없다. 아래의
+  // 버스 처리 전체를 건너뛰고 터널만 돌린다.
+  if (cfg.tunnelRole == kTunnelRoleCamera) {
+    tunnelBridge.pollCamera(cfg, rs485);
+    return;
+  }
 
   bool rawMonitor = serialMenu.rawMonitorActive();
   if (rawMonitor != wasRawMonitorActive) {
@@ -2311,4 +2368,8 @@ void loop() {
   // deadman이 대신 멈춘다. 웹을 아무도 안 쓰면 둘 다 즉시 반환한다.
   pollWebRs485Tx();
   pollWebDeadman();
+
+  if (anyTunnelSlot(cfg)) {
+    tunnelBridge.pollController(routingTable, rs485, lastRs485ByteMs);
+  }
 }
