@@ -332,11 +332,26 @@ void SerialMenu::handleNetworkMenu(const String& line) {
     //
     // 대신 버스가 잠깐 먹통이 된다는 사실은 숨기지 않고 알린다.
     Serial.println("Scanning Wi-Fi networks... (RS485 input is not processed for a few seconds)");
+    // **설정된 SSID가 안 보이는 곳(예: 운용 현장 공유기를 미리 넣어둔 장비)에서는 STA가 그
+    // SSID를 찾느라 계속 스캔/재접속을 돌고 있다.** 그 사이에 스캔을 걸면 드라이버가 "이미
+    // 스캔 중"이라며 실패(-2)하거나 빈 결과를 돌려줘서, 메뉴에는 아무 망도 안 보인다. 그래서
+    // 스캔 전에 STA 접속 시도를 멈춘다(AP는 그대로). 재접속 재시도는 maintainWifi()가 몇 초
+    // 뒤 다시 건다.
+    WiFi.disconnect(/*wifioff=*/false, /*eraseap=*/false);
+    delay(200);
     int found = WiFi.scanNetworks();
+    if (found < 0) {  // 그래도 실패하면 한 번 더 - 접속 시도가 완전히 멈추는 데 시간이 걸릴 수 있다
+      delay(500);
+      found = WiFi.scanNetworks();
+    }
     _scanCount = (found > 0) ? (found > 30 ? 30 : (uint8_t)found) : 0;
 
     Serial.println("   1. Enter SSID manually");
-    if (_scanCount == 0) {
+    if (found < 0) {
+      Serial.print("Scan failed (code ");
+      Serial.print(found);
+      Serial.println("). Try again, or enter the SSID manually.");
+    } else if (_scanCount == 0) {
       Serial.println("No networks found.");
     } else {
       for (uint8_t i = 0; i < _scanCount; i++) {
