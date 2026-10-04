@@ -51,6 +51,7 @@ void RoutingTable::applyDefaults() {
   _config.tunnelRole = kTunnelRoleController;
   _config.tunnelPort = TUNNEL_PORT_DEFAULT;
   _config.tunnelPeer = {{0, 0, 0, 0}};
+  _config.tunnelNoiseFilter = false;
 }
 
 bool RoutingTable::sanitizeRemovedFeatures() {

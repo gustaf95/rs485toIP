@@ -28,6 +28,8 @@ class TunnelBridge {
  public:
   struct Stats {
     uint32_t txFrames = 0;            // IP로 내보낸 프레임
+    uint32_t txFailed = 0;            // 보내지 못한 것 (WiFi 미연결, 송신 버퍼 부족)
+    uint32_t noiseDiscarded = 0;      // 카메라 쪽: 0xFF로 시작하지 않아 버린 바이트
     uint32_t rxFrames = 0;            // IP에서 받은 프레임 (생존 신호 제외)
     uint32_t relayed = 0;             // 컨트롤러 쪽: 버스에 올린 응답
     uint32_t droppedUnsolicited = 0;  // 컨트롤러 쪽: 질문 없이 온 응답을 버림
@@ -81,7 +83,7 @@ class TunnelBridge {
   uint8_t _movingAddr = 0;
   unsigned long _lastCommandMs = 0;
 
-  void sendTo(const IPAddress& ip, const uint8_t* data, uint8_t len);
+  bool sendTo(const IPAddress& ip, const uint8_t* data, uint8_t len);
 };
 
 extern TunnelBridge tunnelBridge;

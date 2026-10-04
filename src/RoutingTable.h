@@ -172,6 +172,11 @@ struct SystemConfig {
   // 카메라 쪽 역할이 프레임을 보내고 받을 상대(컨트롤러 쪽 게이트웨이) 주소.
   // 컨트롤러 쪽은 슬롯의 IP를 쓰므로 이 필드를 보지 않는다.
   StoredIp tunnelPeer;
+  // 카메라 쪽: RS485에서 0xFF(Pelco-D 시작 바이트)로 시작하지 않는 바이트를 버린다.
+  // 기본값은 꺼짐 - 터널은 원래 바이트를 판단 없이 그대로 실어 나르는 것이 기본이고,
+  // 카메라가 안 물린 RX 핀의 노이즈가 UDP 패킷을 만드는 현장에서만 켠다. Pelco-D가
+  // 아닌 응답(예: Pelco-P는 0xA0으로 시작)도 버려지므로 켜기 전에 확인해야 한다.
+  bool tunnelNoiseFilter;
 };
 
 constexpr uint8_t kTunnelRoleController = 0;

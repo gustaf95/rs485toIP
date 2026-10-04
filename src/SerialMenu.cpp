@@ -815,6 +815,11 @@ void SerialMenu::printTunnelMenu() {
   } else {
     Serial.println("not connected");
   }
+  if (cameraSide) {
+    Serial.print("  Noise Filter     : ");
+    Serial.println(cfg.tunnelNoiseFilter ? "ON (drops bytes not starting with 0xFF)"
+                                         : "OFF (everything is passed through)");
+  }
   Serial.print("  Last heard       : ");
   if (st.lastPeerMs == 0) {
     Serial.println("never");
@@ -823,9 +828,11 @@ void SerialMenu::printTunnelMenu() {
     Serial.println(" s ago");
   }
   Serial.print("  Frames to peer   : "); Serial.println(st.txFrames);
+  Serial.print("  Send failed      : "); Serial.println(st.txFailed);
   Serial.print("  Frames from peer : "); Serial.println(st.rxFrames);
   if (cameraSide) {
     Serial.print("  Failsafe Stops   : "); Serial.println(st.failsafeStops);
+    Serial.print("  Noise bytes      : "); Serial.println(st.noiseDiscarded);
   } else {
     Serial.print("  Responses relayed: "); Serial.println(st.relayed);
     Serial.print("  Dropped (no cmd) : "); Serial.println(st.droppedUnsolicited);
@@ -838,7 +845,10 @@ void SerialMenu::printTunnelMenu() {
   Serial.println("------------------------------------------------------------");
   Serial.println("  1. Set Role");
   Serial.println("  2. Set UDP Port");
-  if (cameraSide) Serial.println("  3. Set Peer IP (controller-side gateway)");
+  if (cameraSide) {
+    Serial.println("  3. Set Peer IP (controller-side gateway)");
+    Serial.println("  4. Set Noise Filter (ON/OFF)");
+  }
   Serial.println("  0. Back to Main Menu");
   Serial.println("  (Press Enter with no input to refresh)");
   Serial.print("> ");
@@ -856,6 +866,11 @@ void SerialMenu::handleTunnelMenu(const String& line) {
   } else if (line == "3" && _routing.get().tunnelRole == kTunnelRoleCamera) {
     Serial.print("Enter Peer IP (blank to clear): ");
     _prompt = Prompt::TUNNEL_PEER_VALUE;
+  } else if (line == "4" && _routing.get().tunnelRole == kTunnelRoleCamera) {
+    Serial.println("1. OFF - pass every RS485 byte through (default)");
+    Serial.println("2. ON  - drop bytes that do not start with 0xFF (Pelco-D only)");
+    Serial.print("> ");
+    _prompt = Prompt::TUNNEL_NOISE_CHOICE;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -1415,6 +1430,18 @@ void SerialMenu::handlePrompt(const String& line) {
         Serial.print("Invalid port, try again (blank to cancel): ");
         _prompt = Prompt::TUNNEL_PORT_VALUE;
       }
+      break;
+    }
+    case Prompt::TUNNEL_NOISE_CHOICE: {
+      if (line == "1" || line == "2") {
+        cfg.tunnelNoiseFilter = (line == "2");
+        _storage.save(cfg);
+        Serial.println(cfg.tunnelNoiseFilter ? "Noise filter ON and saved to flash."
+                                             : "Noise filter OFF and saved to flash.");
+      } else {
+        Serial.println("Invalid choice.");
+      }
+      printTunnelMenu();
       break;
     }
     case Prompt::TUNNEL_PEER_VALUE: {

@@ -193,6 +193,8 @@ void serializeConfig(const SystemConfig& cfg, String& out) {
   appendNum(out, "tunnel.port", cfg.tunnelPort);
   out += "# peer: the controller-side gateway (used by the camera side only)\n";
   appendIp(out, "tunnel.peer", cfg.tunnelPeer);
+  out += "# noise_filter: 1 = camera side drops RS485 bytes that do not start with 0xFF\n";
+  appendNum(out, "tunnel.noise_filter", cfg.tunnelNoiseFilter ? 1 : 0);
 
   out += "\n# ---- Status LED ----\n";
   appendNum(out, "led.pin", cfg.statusLedPin);
@@ -435,6 +437,14 @@ ConfigRestoreResult restoreConfig(const String& text, SystemConfig& cfg) {
       } else {
         result.skipped++;
         note(where + "expected a port between 1 and 65535.");
+      }
+    } else if (key == "tunnel.noise_filter") {
+      if (parseBool(value, &flag)) {
+        work.tunnelNoiseFilter = flag;
+        result.applied++;
+      } else {
+        result.skipped++;
+        note(where + "expected 1 or 0.");
       }
     } else if (key == "tunnel.peer") {
       if (parseIp(value, &work.tunnelPeer)) {

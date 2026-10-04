@@ -39,6 +39,7 @@ FoMaKo 매뉴얼 기준 확인된 제어 정보는 다음과 같다.
 |        1 | IP_VISCA_RAW_UDP |  5678 | Raw VISCA payload를 UDP로 전송                |
 |        2 | IP_VISCA_RAW_TCP |  5678 | UDP가 동작하지 않을 때 선택 가능한 fallback   |
 |        3 | SONY_VISCA_UDP   | 52381 | Sony VISCA over IP framing이 필요한 경우 사용 |
+|        4 | PELCO_D_TUNNEL   |  5680 | VISCA가 아니다 - Pelco-D 프레임을 번역 없이 UDP로 실어 나르는 터널(12.6절). 슬롯의 IP는 카메라가 아니라 반대편 게이트웨이다 |
 |     제외 | ONVIF            |  2000 | 본 프로젝트에서는 구현하지 않음               |
 
 주의: 매뉴얼에는 IP VISCA 포트는 명시되어 있지만 UDP/TCP 여부는 명확히 적혀 있지 않다. 기본값은 UDP로 두되, 설정에서 TCP 및 Sony VISCA 모드를 선택할 수 있게 한다.
@@ -565,6 +566,9 @@ RS485 핀이 전부 기본값으로 돌아갔다. "안 쓰는 필드라도 구�
 (`RAW_DATA_UDP`)과 `InputProtocol`의 `4`(`RAW_BRIDGE`)는 비워둔 채로 둔다. 새 항목에 그
 번호를 주면 옛 설정이 엉뚱한 기능으로 되살아난다.
 
+> `ProtocolMode`의 `4`는 이제 **`PELCO_D_TUNNEL`**이다(12.6절). 비워둔 것은 `3`이고, 삭제된
+> `InputProtocol`의 `4`(`RAW_BRIDGE`)는 별개의 열거형이라 여전히 거부된다.
+
 이전 펌웨어에서 그 값들을 저장해둔 기기를 위해, 부팅 시 `RoutingTable::sanitizeRemovedFeatures()`가
 한 번 걸러낸다. 고칠 게 있었을 때만 flash에 다시 쓴다.
 
@@ -617,9 +621,20 @@ ON이면 정상적으로 출력된다.
   4. Counters
   5. Debug Mode
   6. Factory Reset
+  7. Tunnel Settings / Status
 
 Select menu number:
 ============================================================
+```
+
+**터널의 카메라 쪽 역할(12.6절)로 설정된 장치는 메뉴가 줄어든다.** 번역/라우팅을 하지 않는
+장치라 Routing Table, Counters, Debug Mode가 의미가 없기 때문이다:
+
+```text
+  1. Network Settings
+  2. RS485 Settings        (Input Protocol / Pelco Response / Camera Response 항목 숨김)
+  3. Tunnel Settings / Status
+  4. Factory Reset
 ```
 
 한글 Serial 출력은 환경에 따라 깨질 수 있으므로 기본 메뉴는 영문으로 출력한다.
@@ -1380,6 +1395,104 @@ Watching for a response (Raw Byte Monitor)...
 
 ---
 
+## 12.6 Pelco-D 터널 (RS485 over IP)
+
+이 장치의 본래 일은 Pelco를 VISCA로 **번역**하는 것이다. 그런데 번역으로는 대체할 수 없는
+경우가 있다 - 카메라가 Pelco-D를 **직접** 받는 EDIS ED-P인데 RS485 선을 깔기 어려울 때다.
+터널은 번역 없이 Pelco-D 바이트를 그대로 UDP에 실어 반대편 장치가 다시 RS485로 꺼내게 해서,
+그 선 한 구간만 무선으로 바꾼다.
+
+```text
+컨트롤러 --RS485 버스--+-- 카메라 1, 3, 4 (유선 그대로)
+                       +-- [A 컨트롤러 쪽] ~~ UDP(WiFi) ~~ [B 카메라 쪽] --RS485-- 카메라 2
+```
+
+**같은 펌웨어, 같은 보드로 두 역할을 설정만 바꿔 쓴다.** 빌드 타깃을 나누지 않은 이유는
+이미지 하나로 두 장치를 만들고, 설정 백업(13.4.2절)으로 한 대를 다른 쪽에 복사할 수 있어서다.
+
+### 설정
+
+| 항목 | 위치 | 설명 |
+| --- | --- | --- |
+| Role | Serial `7. Tunnel Settings` / 웹 `/rs485` / `tunnel.role` | `0` 컨트롤러 쪽(기본), `1` 카메라 쪽. 재부팅 없이 즉시 바뀐다 |
+| UDP Port | 같은 곳 / `tunnel.port` | 기본 **5680**. 양쪽이 같아야 한다. VISCA 소켓(5678)과 **별개 소켓**이다 |
+| Peer IP | 카메라 쪽만 / `tunnel.peer` | 컨트롤러 쪽 장치(A)의 IP. 이 주소가 아닌 곳에서 온 패킷은 버린다 |
+| Noise Filter | 카메라 쪽만 / `tunnel.noise_filter` | 기본 **꺼짐**. 아래 "노이즈 필터" 참고 |
+| 슬롯 Protocol | Routing Table / `camN.protocol` | 컨트롤러 쪽에서 터널로 중계할 카메라를 `PELCO_D_TUNNEL`로. **그 슬롯의 IP = 카메라 쪽 장치(B)의 IP** |
+
+**기본값**은 컨트롤러 쪽 장치이고 **카메라 2번 슬롯이 터널**이다. 슬롯의 IP가 비어 있는 동안은
+꺼져 있고(`CameraSlot::isTunnel()` = 프로토콜이 터널 **그리고** IP 있음), B의 IP를 넣는 순간
+켜진다. 이미 설정을 저장해 둔 장비는 기본값으로 덮어쓰지 않으므로 슬롯의 Protocol을 직접 바꿔야 한다.
+
+### 설정 순서
+
+**컨트롤러 쪽(A)** - 컨트롤러의 RS485 버스에 1/3/4번 카메라와 병렬로 물린다.
+
+1. Routing Table -> 카메라 2 -> Set Protocol `4. PELCO_D_TUNNEL`, Set IP = B의 IP
+2. RS485 Settings: 속도/핀을 컨트롤러 버스에 맞춘다. Input Protocol은 Pelco-D, Pelco Response는
+   기본값 `No response`로 둔다(같은 버스의 실물 카메라 응답과 부딪히지 않게)
+
+**카메라 쪽(B)** - 카메라 2번의 RS485에 물린다. 카메라의 Pelco-D 주소는 그대로 2번이다.
+
+1. Tunnel Settings -> Set Role `Camera side` (메뉴가 줄어든다)
+2. Set Peer IP = A의 IP
+3. Network Settings(WiFi), RS485 Settings(속도/DE-RE 핀)를 카메라에 맞춘다
+
+**A의 IP는 공유기에서 고정(예약)한다.** B는 Peer IP에서 온 패킷만 받으므로, A의 IP가 바뀌면
+링크가 조용히 끊긴 것처럼 보인다(`Last heard`가 `never`로 남는다).
+
+### 동작
+
+**컨트롤러 쪽(A)**
+
+- 버스에서 들은 프레임 중 **터널 슬롯 주소**의 것만 번역하지 않고 그 슬롯의 IP로 보낸다.
+  1/3/4번과 VISCA 슬롯(예: FoMaKo 6번)은 지금까지와 같다.
+- 터널 슬롯은 VISCA 대상이 아니다(`isConfigured()`가 false) - 번역, VISCA 조회, 합성 ACK/EDIS
+  응답, 자동 전원 제어, 웹의 "IP로 보내기" 경로가 이 슬롯을 건드리지 않는다. 합성 응답을 끄는 게
+  중요하다: 켜 두면 진짜 카메라의 응답과 버스에서 충돌한다.
+- 웹 제어 패널의 2번 카메라 명령도 터널로 나간다(버스에는 그 카메라가 없으므로).
+- **카메라가 돌려준 응답**(EDIS의 `D7` 조회 응답, 거절 `66`)은 컨트롤러 쪽이 **그 카메라에 명령을
+  보낸 직후 300ms 안에**, **버스가 조용할 때만** 버스에 올린다. 질문하지 않은 응답을 아무 때나
+  올리면 1/3/4번 응답과 부딪힌다. 100ms 안에 못 올리면 버린다(컨트롤러는 이미 타임아웃). 올린
+  응답은 웹 상태 캐시에도 반영한다.
+- **Stop은 두 번** 보낸다 - 유실되면 카메라가 계속 도는 유일한 명령이다.
+- 0.5초마다 생존 신호(1바이트 `0xFE`, Pelco-D 프레임은 항상 `0xFF`로 시작해 겹치지 않는다)를 보낸다.
+
+**카메라 쪽(B)**
+
+- UDP로 받은 바이트를 그대로 RS485로 쓰고, RS485에서 들은 바이트를 그대로 UDP로 보낸다. 프레임
+  길이를 가정하지 않는다(4바이트 ACK도 7바이트 `D7`도 있다). 바이트 사이가 약 4바이트 시간
+  (9600bps에서 6ms, 2400bps에서 18ms) 조용해지면 한 패킷으로 묶어 보낸다.
+- **링크 단절 안전장치**: 마지막으로 받은 이동 명령 뒤 1.5초 동안 A의 프레임도 생존 신호도 없으면
+  **스스로 Stop 프레임을 카메라에 보낸다.** 이 터널이 새로 만들어내는 유일한 바이트다.
+- 설정된 Peer IP가 아닌 곳에서 온 UDP는 버린다. 번역이 없는 모드라 들어온 바이트를 걸러줄 다른
+  단계가 없고, 한 패킷이 카메라를 움직일 수 있어서다. **인증이 아니다** - 같은 LAN에서 IP는 위조할
+  수 있고 암호화도 없다. 실수와 잡음을 막는 장치다.
+- WiFi가 연결돼 있지 않으면 보내지 않고 `Send failed`로 센다. 연결 안 된 채로 `endPacket()`을
+  부르면 라이브러리가 `could not send data: 12`를 콘솔에 쏟아낸다.
+
+### 노이즈 필터 (카메라 쪽, 기본 꺼짐)
+
+켜면 RS485에서 `0xFF`로 시작하지 않는 바이트를 버린다. 카메라가 안 물린 RX 핀은 노이즈 바이트를
+만들고, 필터가 없으면 그 한 줄마다 UDP 패킷이 하나씩 나간다. **기본이 꺼짐인 이유**는 터널의 기본이
+"판단 없이 그대로 전달"이기 때문이다 - 켜면 Pelco-D가 아닌 응답(예: Pelco-P는 `0xA0`으로 시작)도
+버려진다.
+
+### 한계
+
+- **Pelco-D 전용**이다. Pelco-P 입력은 터널하지 않는다.
+- 컨트롤러가 응답을 기다리는 시간 안에 WiFi 왕복이 들어와야 한다. 2번에서 모드 조회(`D3 19`)를
+  눌러 LED 표시가 정상인지 현장에서 확인해야 한다.
+- 버스 충돌은 "명령 직후 + 버스 유휴" 규칙으로 **줄일 뿐 없애지는 못한다.** 게이트웨이는 자기 송신
+  중에는 버스를 들을 수 없다([`todo.md`](todo.md) 1.5절과 같은 문제).
+- WiFi는 지연이 튄다. B는 가능하면 AP 가까이에 둔다. 공유기와 증폭기가 같은 SSID를 쓰는 환경에서는
+  연결 시 **가장 센 AP에 붙는다**(전 채널 스캔 + 신호 세기순). 연결된 뒤 신호가 약해져도 다른 AP로
+  알아서 옮겨 가지는 않고, 끊겼다가 다시 붙을 때 다시 고른다.
+- 터널 송수신 수, 실패 수, 상대에게서 마지막으로 소식을 들은 시각, 붙어 있는 AP(BSSID/채널/RSSI),
+  링크 단절로 낸 Stop 횟수는 Serial `Tunnel Settings / Status` 화면에서 본다(Enter로 새로고침).
+
+---
+
 ## 13. Web Config Server
 
 USB Serial에 물리적으로 접근할 수 없는 상황을 위한 두 번째 설정 인터페이스 —
@@ -1429,7 +1542,7 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 |---|---|---|
 | `GET /` | Main Menu 상태 블록 | Board(어느 보드용 펌웨어인지), Wi-Fi(STA/AP) 상태, Debug Mode, 각 페이지 링크 |
 | `GET`/`POST /network` | Network Settings | SSID(**직전 스캔** 드롭다운 + 직접 입력, 13.5절), Password(빈 칸 = 기존 유지), DHCP, Static IP/Gateway/Subnet, Retry 버튼, AP SSID/Password(별도 폼, `POST /network/ap`) |
-| `GET`/`POST /rs485` | RS485 Settings | Board/UART 표시, Baudrate, Signal Inversion, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode, Camera Response Mode, Status LED Pin/Logic |
+| `GET`/`POST /rs485` | RS485 Settings | Board/UART 표시, Baudrate, Signal Inversion, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode, Camera Response Mode, Status LED Pin/Logic, **Pelco-D 터널**(Role / UDP Port / Peer IP / Noise Filter, 12.6절) |
 | `GET /routing` | Routing Table | CAM1~7 목록 |
 | `GET`/`POST /routing/cam?n=N` | Camera Detail | IP(빈 칸 = 삭제)/Port/Protocol/Address Mode/Auto Power Control |
 | `GET /counters` | Counters | 2초 자동 새로고침 |
@@ -1598,7 +1711,7 @@ arduino-esp32 내장만 쓴다), 중첩 객체와 배열까지 다루는 파서�
 | `rs485.baud` | `RS485_BAUD_CHOICES`에 있는 값만 | 목록에 없는 값(예: 19200)을 넣으면 그 뒤로 Serial/웹 어디에도 지금 값에 해당하는 항목이 없어서, RS485 화면을 열어 저장하는 것만으로 보드레이트가 조용히 바뀐다 |
 | `wifi.ap_password` | 8자 이상 | WPA2가 8자 미만을 받지 않아 `softAP()`가 실패한다 — **AP 자체가 안 뜨고**, 웹이 유일한 접근 경로인 기기에서는 그게 곧 잠김이다 |
 | SSID/비밀번호 길이 | 필드 크기 초과면 거부 | 잘라 넣으면 조용히 접속만 안 되는 값이 된다 |
-| 열거값 | 삭제된 값(Raw Bridge=4, RAW_DATA_UDP=3) 제외한 범위 | 10.1절과 같은 이유 — 파일로 되살아나면 안 된다 |
+| 열거값 | 삭제된 값(`input_protocol`의 4, 슬롯 `protocol`의 3) 제외한 범위 | 10.1절과 같은 이유 — 파일로 되살아나면 안 된다 |
 | 숫자 필드 | 숫자가 아니면 거부 | `String::toInt()`는 `"abc"`에도 0을 돌려준다. 오타 하나가 그대로 핀 번호 0이 된다 |
 
 파일이 통째로 거부되는 경우는 하나뿐이다 — 첫 줄의 `format=` 표시가 없을 때. 그때는
@@ -1758,6 +1871,7 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
   Diagnostics.h / .cpp
   Storage.h / .cpp
   StatusLed.h / .cpp
+  TunnelBridge.h / .cpp   Pelco-D 터널(12.6절)
 ```
 
 헤더도 전부 `src/`에 있다 — PlatformIO 기본 골격의 `include/`, `lib/`, `test/`는 이
@@ -1786,6 +1900,7 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
 | Diagnostics         | 카운터, 최근 패킷/raw 바이트 로그, 디버그 출력 관리      |
 | Storage             | Preferences/NVS 저장 및 로드                             |
 | StatusLed           | 상태 LED 제어 (핀/극성 런타임 설정, 3.4절)               |
+| TunnelBridge        | RS485 <-> UDP <-> RS485 Pelco-D 터널, 두 역할(12.6절)    |
 
 ---
 

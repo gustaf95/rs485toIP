@@ -9,7 +9,7 @@ const char* kBlobKey = "config";
 constexpr uint32_t kConfigMagic = 0x56494738;  // "VIG8" (bumped for the camera-slot layout)
 
 // 현재 레이아웃 버전. **필드를 구조체 끝에 덧붙일 때만** 올린다.
-constexpr uint16_t kConfigVersion = 12;  // bumped: SystemConfig 끝에 tunnelRole/Port/Peer 추가
+constexpr uint16_t kConfigVersion = 13;  // bumped: SystemConfig 끝에 tunnelRole/Port/Peer, tunnelNoiseFilter 추가
 
 // 여기까지의 버전은 현재 구조체의 **접두사**라는 것이 보장된다 - 즉 v10 블롭을 그대로
 // 앞에서부터 읽어도 필드가 밀리지 않는다. v9 이하는 CameraSlot 중간에 필드가 들어간
@@ -22,6 +22,9 @@ constexpr size_t kV10Size = offsetof(SystemConfig, statusLedActiveLow);
 // 새 필드를 cameras[] 뒤가 아니라 중간에 끼워 넣으면 위 "접두사" 전제가 깨진다.
 // 그러면 옛 펌웨어가 저장한 바이트가 통째로 한 칸씩 밀려 엉뚱한 값으로 읽히는데,
 // 그건 설정이 초기화되는 것보다 훨씬 나쁘다(잘못된 핀으로 조용히 동작한다).
+static_assert(offsetof(SystemConfig, tunnelNoiseFilter) >=
+                  offsetof(SystemConfig, tunnelPeer) + sizeof(SystemConfig::tunnelPeer),
+              "tunnelNoiseFilter must be appended after tunnelPeer");
 static_assert(offsetof(SystemConfig, tunnelRole) >=
                   offsetof(SystemConfig, statusLedActiveLow) + sizeof(SystemConfig::statusLedActiveLow),
               "tunnel fields must be appended after statusLedActiveLow");

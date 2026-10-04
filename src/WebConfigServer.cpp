@@ -552,6 +552,11 @@ String WebConfigServer::rs485PageBody(const String& error) {
           "<input type=\"text\" name=\"tunnel_peer\" value=\"" +
           (cfg.tunnelPeer.isZero() ? String("") : cfg.tunnelPeer.toIPAddress().toString()) +
           "\"></label>";
+  body += "<label>Camera-side Noise Filter: <select name=\"tunnel_noise\">";
+  appendOption(body, 0, cfg.tunnelNoiseFilter ? 1 : 0, "Off - pass every RS485 byte through");
+  appendOption(body, 1, cfg.tunnelNoiseFilter ? 1 : 0,
+               "On - drop bytes that do not start with 0xFF (Pelco-D only)");
+  body += "</select></label>";
   body += "<p><i>Controller side: set a camera slot protocol to PELCO_D_TUNNEL and its IP to the "
           "camera-side gateway. Changes apply immediately.</i></p>";
 
@@ -612,6 +617,7 @@ void WebConfigServer::handleRs485Post() {
       cfg.tunnelPort = (uint16_t)tunnelPort;
       tunnelBridge.begin(cfg.tunnelPort);  // 소켓을 새 포트로 다시 연다
     }
+    cfg.tunnelNoiseFilter = (_server.arg("tunnel_noise").toInt() != 0);
     String peerStr = _server.arg("tunnel_peer");
     peerStr.trim();
     if (peerStr.length() == 0) {

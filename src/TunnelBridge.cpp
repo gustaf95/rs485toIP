@@ -1,4 +1,5 @@
 #include "TunnelBridge.h"
+#include <WiFi.h>
 
 TunnelBridge tunnelBridge;
 
@@ -28,10 +29,20 @@ void TunnelBridge::begin(uint16_t port) {
   _udp.begin(port);
 }
 
-void TunnelBridge::sendTo(const IPAddress& ip, const uint8_t* data, uint8_t len) {
-  if (_udp.beginPacket(ip, _port) == 0) return;
+bool TunnelBridge::sendTo(const IPAddress& ip, const uint8_t* data, uint8_t len) {
+  // WiFi에 붙어 있지 않으면 보내지 않는다. 그 상태에서 endPacket()을 부르면 라이브러리가
+  // 실패할 때마다 "could not send data: 12" 에러를 콘솔에 쏟아낸다(프레임/생존 신호마다).
+  // 실패는 txFailed로 센다.
+  if (WiFi.status() != WL_CONNECTED || _udp.beginPacket(ip, _port) == 0) {
+    _stats.txFailed++;
+    return false;
+  }
   _udp.write(data, len);
-  _udp.endPacket();
+  if (_udp.endPacket() == 0) {
+    _stats.txFailed++;
+    return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,12 +53,12 @@ void TunnelBridge::forwardFromBus(const CameraSlot& slot, const uint8_t* frame, 
   if (len == 0 || len > TUNNEL_MAX_FRAME) return;
   IPAddress ip = slot.ip.toIPAddress();
 
-  sendTo(ip, frame, len);
+  bool ok = sendTo(ip, frame, len);
   // Stop은 유실되면 카메라가 계속 도는 유일한 명령이라 한 번 더 보낸다. 같은 프레임이
   // 두 번 나가도 카메라에는 해가 없다.
   if (isStop(frame, len)) sendTo(ip, frame, len);
 
-  _stats.txFrames++;
+  if (ok) _stats.txFrames++;
   _lastForwardMs = millis();
 }
 
@@ -149,13 +160,19 @@ void TunnelBridge::pollCamera(const SystemConfig& cfg, Rs485Port& rs485) {
   // 바이트가 끊긴 간격으로 프레임 경계를 잡는다.
   while (rs485.available()) {
     uint8_t b = rs485.read();
+    // 선택 기능(기본 꺼짐): 프레임은 0xFF(Pelco-D 시작 바이트)로 시작하므로, 그 앞의
+    // 바이트는 카메라가 안 물린 RX 핀이나 전기 노이즈가 만든 것으로 보고 버린다. 안 그러면
+    // 노이즈 한 줄마다 UDP 패킷이 하나씩 나간다. 대신 Pelco-D가 아닌 응답도 버려진다.
+    if (cfg.tunnelNoiseFilter && _rxLen == 0 && b != PELCO_D_START_BYTE) {
+      _stats.noiseDiscarded++;
+      continue;
+    }
     if (_rxLen < sizeof(_rxBuf)) _rxBuf[_rxLen++] = b;
     _lastRxByteMs = now;
   }
   if (_rxLen > 0 && (now - _lastRxByteMs) >= quietGapMs(cfg.rs485Baudrate)) {
     if (havePeer) {
-      sendTo(peer, _rxBuf, _rxLen);
-      _stats.txFrames++;
+      if (sendTo(peer, _rxBuf, _rxLen)) _stats.txFrames++;
     }
     _rxLen = 0;
   }
