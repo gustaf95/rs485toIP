@@ -305,13 +305,6 @@ void SerialMenu::printNetworkMenu() {
   Serial.println(cfg.wifi.gateway.toIPAddress().toString());
   Serial.print("  Subnet           : ");
   Serial.println(cfg.wifi.subnet.toIPAddress().toString());
-  Serial.print("  Boot Delay       : ");
-  if (cfg.wifiBootDelaySec == 0) {
-    Serial.println("0 s (connect at once)");
-  } else {
-    Serial.print(cfg.wifiBootDelaySec);
-    Serial.println(" s after power-up");
-  }
   Serial.println();
   Serial.println("  (Status LED pin is configured under RS485 Settings.)");
   Serial.println();
@@ -324,7 +317,6 @@ void SerialMenu::printNetworkMenu() {
   Serial.println("  4. Retry Wi-Fi Connection");
   Serial.println("  5. Set AP SSID");
   Serial.println("  6. Set AP Password");
-  Serial.println("  7. Set Boot Delay");
   Serial.println("  0. Back to Main Menu");
   Serial.print("> ");
 }
@@ -390,11 +382,6 @@ void SerialMenu::handleNetworkMenu(const String& line) {
   } else if (line == "6") {
     Serial.print("Enter AP Password (blank to cancel, min 8 chars for WPA2): ");
     _prompt = Prompt::AP_PASSWORD;
-  } else if (line == "7") {
-    Serial.print("Enter seconds to wait after power-up before connecting (0-");
-    Serial.print(WIFI_BOOT_DELAY_S_MAX);
-    Serial.print(", 0 = at once, blank to cancel): ");
-    _prompt = Prompt::WIFI_BOOT_DELAY_VALUE;
   } else if (line == "0") {
     _screen = Screen::MAIN;
     printMainMenu();
@@ -1166,26 +1153,6 @@ void SerialMenu::handlePrompt(const String& line) {
         Serial.println("AP Password updated and saved to flash.");
       }
       printNetworkMenu();
-      break;
-    }
-    case Prompt::WIFI_BOOT_DELAY_VALUE: {
-      if (line.length() == 0) {
-        Serial.println("Cancelled.");
-        printNetworkMenu();
-        break;
-      }
-      // toInt()는 숫자가 아니면 0을 돌려준다 - "0"이 아닌데 0이 나오면 잘못 친 것이다.
-      long sec = line.toInt();
-      bool isNumber = (sec != 0 || line == "0");
-      if (isNumber && sec >= 0 && sec <= WIFI_BOOT_DELAY_S_MAX) {
-        cfg.wifiBootDelaySec = (uint16_t)sec;
-        _storage.save(cfg);
-        Serial.println("Boot delay set and saved to flash. Takes effect from the next power-up.");
-        printNetworkMenu();
-      } else {
-        Serial.print("Invalid value, try again (blank to cancel): ");
-        _prompt = Prompt::WIFI_BOOT_DELAY_VALUE;
-      }
       break;
     }
     case Prompt::STATIC_IP_VALUE: {

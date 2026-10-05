@@ -389,11 +389,6 @@ void WebConfigServer::handleNetworkGet() {
           cfg.wifi.gateway.toIPAddress().toString() + "\"></label>";
   body += "<label>Subnet: <input type=\"text\" name=\"subnet\" value=\"" +
           cfg.wifi.subnet.toIPAddress().toString() + "\"></label>";
-  body += "<label>Boot Delay (seconds before the first connection after power-up, 0-" +
-          String(WIFI_BOOT_DELAY_S_MAX) +
-          ", 0 = connect at once): <input type=\"number\" name=\"boot_delay\" min=\"0\" max=\"" +
-          String(WIFI_BOOT_DELAY_S_MAX) + "\" value=\"" + String(cfg.wifiBootDelaySec) +
-          "\"></label>";
   body += "<button type=\"submit\">Save</button>";
   body += "</form>";
 
@@ -433,14 +428,6 @@ void WebConfigServer::handleNetworkPost() {
   if (ip.fromString(_server.arg("static_ip"))) cfg.wifi.staticIp.fromIPAddress(ip);
   if (ip.fromString(_server.arg("gateway"))) cfg.wifi.gateway.fromIPAddress(ip);
   if (ip.fromString(_server.arg("subnet"))) cfg.wifi.subnet.fromIPAddress(ip);
-
-  // 다음 부팅부터 적용된다. 빈 칸이나 범위 밖 값은 무시하고 지금 값을 유지한다.
-  String bootDelay = _server.arg("boot_delay");
-  bootDelay.trim();
-  if (bootDelay.length() > 0) {
-    long sec = bootDelay.toInt();
-    if (sec >= 0 && sec <= WIFI_BOOT_DELAY_S_MAX) cfg.wifiBootDelaySec = (uint16_t)sec;
-  }
 
   _storage.save(cfg);
   redirectTo("/network");

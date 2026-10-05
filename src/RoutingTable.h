@@ -177,11 +177,6 @@ struct SystemConfig {
   // 카메라가 안 물린 RX 핀의 노이즈가 UDP 패킷을 만드는 현장에서만 켠다. Pelco-D가
   // 아닌 응답(예: Pelco-P는 0xA0으로 시작)도 버려지므로 켜기 전에 확인해야 한다.
   bool tunnelNoiseFilter;
-
-  // 부팅 후 첫 Wi-Fi 접속 시도까지의 지연(초). 0 = 바로 접속. WifiConfig 안이 아니라
-  // 여기 있는 이유는 위 "구조체 끝에만 덧붙인다" 규칙 때문이다 - WifiConfig는 중간에 있다.
-  // 의미는 config.h WIFI_BOOT_DELAY_S_DEFAULT 주석 참고.
-  uint16_t wifiBootDelaySec;
 };
 
 constexpr uint8_t kTunnelRoleController = 0;

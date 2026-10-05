@@ -292,12 +292,6 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 #define DEFAULT_CAMERA_PORT 5678
 #define SONY_VISCA_PORT 52381
 #define WIFI_CONNECT_TIMEOUT_MS 15000
-// 전원이 들어온 뒤 첫 STA 접속 시도까지 기다리는 시간(초). 무선랜 확장기와 같은 전원에
-// 물려 같이 켜지는 현장 때문이다 - 확장기가 뜨기 전에 접속하면 같은 SSID의 다른 AP(먼
-// 공유기)에 붙고, 연결된 뒤에는 더 센 AP로 옮겨 가지 않으므로 그대로 거기 머문다.
-// 0이면 지연 없이 바로 접속한다. 설정 항목(SystemConfig::wifiBootDelaySec)의 기본값이다.
-#define WIFI_BOOT_DELAY_S_DEFAULT 20
-#define WIFI_BOOT_DELAY_S_MAX 600
 
 // ---- Camera routing slots ----
 #define CAMERA_SLOT_COUNT 7

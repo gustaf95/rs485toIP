@@ -161,9 +161,6 @@ void serializeConfig(const SystemConfig& cfg, String& out) {
   appendIp(out, "wifi.static_ip", cfg.wifi.staticIp);
   appendIp(out, "wifi.gateway", cfg.wifi.gateway);
   appendIp(out, "wifi.subnet", cfg.wifi.subnet);
-  out += "# Seconds to wait after power-up before the first connection attempt\n";
-  out += "# (0 = connect at once). Lets a Wi-Fi extender on the same power come up first.\n";
-  appendNum(out, "wifi.boot_delay", cfg.wifiBootDelaySec);
 
   out += "\n# ---- Access point ----\n";
   out += "# The AP name ends in this board's MAC digits, so it is unique per gateway.\n";
@@ -328,14 +325,6 @@ ConfigRestoreResult restoreConfig(const String& text, SystemConfig& cfg) {
       } else {
         result.skipped++;
         note(where + "expected 1 or 0.");
-      }
-    } else if (key == "wifi.boot_delay") {
-      if (parseUint(value, WIFI_BOOT_DELAY_S_MAX, &num)) {
-        work.wifiBootDelaySec = (uint16_t)num;
-        result.applied++;
-      } else {
-        result.skipped++;
-        note(where + "expected seconds between 0 and " + String(WIFI_BOOT_DELAY_S_MAX) + ".");
       }
     } else if (key == "wifi.static_ip" || key == "wifi.gateway" || key == "wifi.subnet") {
       StoredIp* target = key == "wifi.static_ip" ? &work.wifi.staticIp

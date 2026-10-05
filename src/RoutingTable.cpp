@@ -52,7 +52,6 @@ void RoutingTable::applyDefaults() {
   _config.tunnelPort = TUNNEL_PORT_DEFAULT;
   _config.tunnelPeer = {{0, 0, 0, 0}};
   _config.tunnelNoiseFilter = false;
-  _config.wifiBootDelaySec = WIFI_BOOT_DELAY_S_DEFAULT;
 }
 
 bool RoutingTable::sanitizeRemovedFeatures() {
