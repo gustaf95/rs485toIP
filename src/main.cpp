@@ -35,6 +35,10 @@ SerialMenu serialMenu(routingTable, storage, diagnostics, rs485, statusLed, conn
 // 생성자에 그 함수들의 포인터를 넘겨야 하기 때문이다. setup()/loop()에서만 쓰인다.
 
 bool wifiIsStation = false;
+// 부팅 지연(SystemConfig::wifiBootDelaySec)이 끝나기를 기다리는 중인가. 그동안 STA는
+// 아직 시작하지 않은 상태라 maintainWifi()의 재시도도 돌지 않는다.
+bool wifiBootDelayPending = false;
+unsigned long wifiBootDelayStartMs = 0;
 unsigned long lastWifiRetryMs = 0;
 bool wasWifiConnected = false;
 const unsigned long kWifiRetryIntervalMs = 5000;
@@ -356,13 +360,9 @@ const char* protocolTag(ProtocolMode mode) {
 // Wi-Fi STA 연결을 시도한다. 실패해도 Serial 메뉴와 WebConfigServer의 AP는 계속
 // 쓸 수 있다 (AP는 STA 연결 여부와 무관하게 항상 켜져 있음, WebConfigServer::begin()
 // 참고) - maintainWifi()가 주기적으로 STA 재접속을 시도한다.
-void connectWifi() {
-  SystemConfig& cfg = routingTable.get();
-  // 부팅 중 첫 호출(setup())에서는 메뉴가 잠긴 상태라 항상 조용하다. 나중에
-  // "Retry Wi-Fi Connection"으로 다시 호출될 때는 메뉴가 열려 있어야만 호출 가능한
-  // 동작이라 자연히 verbose해진다.
-  bool verbose = serialMenu.menuActive();
-
+// STA 접속에 앞서 라디오를 준비한다. 부팅 지연 중에도 AP와 lwIP는 바로 떠 있어야 하므로
+// (웹 설정 화면, 아래 WiFi.mode() 주석) 접속 시도와 분리해 setup()에서 항상 먼저 부른다.
+void prepareWifiRadio() {
   // WiFi.mode()는 SSID 유무와 상관없이 항상 먼저 호출한다 - 이것이 lwIP TCP/IP
   // 태스크를 초기화하며, 이걸 건너뛰면 이후 WiFiUDP::begin() 호출 시
   // "tcpip_send_msg_wait_sem ... Invalid mbox" assert로 재부팅 루프에 빠진다.
@@ -376,25 +376,45 @@ void connectWifi() {
   // 적용된다(WiFiSTA의 정적 설정이라).
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+}
 
-  if (strlen(cfg.wifi.ssid) == 0) {
-    if (verbose) {
-      Serial.println("No Wi-Fi SSID configured. Use Serial menu (Network Settings) to set one.");
-    }
-    return;
-  }
+// STA 접속을 시작만 하고 바로 돌아온다(비동기). 붙었는지는 maintainWifi()가 본다.
+// SSID가 없으면 시작하지 않고 false.
+bool beginStation() {
+  SystemConfig& cfg = routingTable.get();
+  if (strlen(cfg.wifi.ssid) == 0) return false;
 
   if (!cfg.wifi.useDhcp) {
     WiFi.config(cfg.wifi.staticIp.toIPAddress(), cfg.wifi.gateway.toIPAddress(),
                 cfg.wifi.subnet.toIPAddress());
   }
+  WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
+  wifiIsStation = true;
+  return true;
+}
 
-  if (verbose) {
+void connectWifi() {
+  SystemConfig& cfg = routingTable.get();
+  // 부팅 중 첫 호출(setup())에서는 메뉴가 잠긴 상태라 항상 조용하다. 나중에
+  // "Retry Wi-Fi Connection"으로 다시 호출될 때는 메뉴가 열려 있어야만 호출 가능한
+  // 동작이라 자연히 verbose해진다.
+  bool verbose = serialMenu.menuActive();
+
+  // 사람이 직접 재시도를 눌렀다면 남은 부팅 지연은 더 기다리지 않는다.
+  wifiBootDelayPending = false;
+
+  prepareWifiRadio();
+
+  if (verbose && strlen(cfg.wifi.ssid) > 0) {
     Serial.print("WiFi connecting to ");
     Serial.print(cfg.wifi.ssid);
   }
-  WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
-  wifiIsStation = true;
+  if (!beginStation()) {
+    if (verbose) {
+      Serial.println("No Wi-Fi SSID configured. Use Serial menu (Network Settings) to set one.");
+    }
+    return;
+  }
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < WIFI_CONNECT_TIMEOUT_MS) {
@@ -416,6 +436,19 @@ void connectWifi() {
 
 // STA 모드로 연결을 시도했으나 끊어진 경우, 주기적으로 재접속을 시도한다.
 void maintainWifi() {
+  if (wifiBootDelayPending) {
+    unsigned long delayMs = (unsigned long)routingTable.get().wifiBootDelaySec * 1000UL;
+    if (millis() - wifiBootDelayStartMs < delayMs) return;
+    wifiBootDelayPending = false;
+    // 부팅 때 connectWifi()처럼 15초를 붙잡고 기다리지 않는다 - 지금은 loop() 안이라
+    // 그동안 RS485 수신이 멈춘다. 시작만 하고, 붙는 것은 다음 회전부터 아래가 본다.
+    if (beginStation()) {
+      lastWifiRetryMs = millis();
+      if (serialMenu.menuActive()) Serial.println("Wi-Fi boot delay over, connecting...");
+    }
+    return;
+  }
+
   if (!wifiIsStation) return;
 
   SystemConfig& cfg = routingTable.get();
@@ -2298,7 +2331,15 @@ void setup() {
               cfg.rs485Invert);
   rs485.setTxEcho(echoRawTxPacket);
 
-  connectWifi();
+  // 부팅 지연이 있으면 라디오(AP 포함)만 올려 두고 첫 접속은 maintainWifi()가 나중에 건다.
+  // setup()에서 delay()로 기다리지 않는 이유: 그동안 웹 설정 화면도 RS485도 멈춘다.
+  if (cfg.wifiBootDelaySec > 0 && strlen(cfg.wifi.ssid) > 0) {
+    prepareWifiRadio();
+    wifiBootDelayPending = true;
+    wifiBootDelayStartMs = millis();
+  } else {
+    connectWifi();
+  }
 
   ipViscaClient.begin(DEFAULT_CAMERA_PORT);
   sonyViscaClient.begin();
