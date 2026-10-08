@@ -675,6 +675,7 @@ Menu로 돌아간다. 확인되면 RS485 UART를 새 기본값으로 즉시 재�
   AP IP            : 192.168.4.1
   Gateway          : 192.168.1.1
   Subnet           : 255.255.255.0
+  Boot Delay       : 20 s after power-up
 
 ------------------------------------------------------------
  Options
@@ -685,11 +686,33 @@ Menu로 돌아간다. 확인되면 RS485 UART를 새 기본값으로 즉시 재�
   4. Retry Wi-Fi Connection
   5. Set AP SSID
   6. Set AP Password
+  7. Set Boot Delay (camera side only)
   0. Back to Main Menu
 ```
 
-Network Settings의 값(SSID, 비밀번호, DHCP/Static IP, Gateway, Subnet, AP SSID/Password)은
-별도의 저장 단계 없이 변경 즉시 flash(NVS)에 기록된다.
+Network Settings의 값(SSID, 비밀번호, DHCP/Static IP, Gateway, Subnet, AP SSID/Password,
+Boot Delay)은 별도의 저장 단계 없이 변경 즉시 flash(NVS)에 기록된다.
+
+**Boot Delay**(기본 **20초**, 0~600, 0이면 바로 접속)는 전원이 들어온 뒤 첫 STA 접속 시도까지
+기다리는 시간이다. **터널의 카메라 쪽 역할(12.6절)에서만 동작한다** - 확장기 옆에 놓이는 건
+카메라 쪽 장치이고, 컨트롤러 쪽은 다른 카메라들까지 맡고 있어 기다릴 이유가 없다. 컨트롤러 쪽에서는
+값을 저장해 둘 수는 있지만 쓰이지 않고(메뉴에 `not used`로 표시), 역할을 바꾸면 다음 전원 투입부터
+적용된다. 무선랜 확장기와 같은 전원에 물려 같이 켜지는 현장 때문이다. 접속에 실패하는
+것 자체는 문제가 아니다(5초마다 다시 시도한다). 문제는 확장기가 아직 안 뜬 사이에 같은 SSID의
+**다른 AP(먼 공유기)에 붙는 것**이다 - 연결된 뒤에는 더 센 AP로 옮겨 가지 않으므로(12.6절
+"한계") 그대로 약한 AP에 머문다. 그래서 확장기가 뜰 시간을 준다.
+
+- 지연은 비동기다. 그동안에도 AP(웹 설정 화면)와 RS485 처리는 정상으로 돌아간다. 다만 STA가
+  아직 시작하지 않았으므로 IP로 나가는 것(VISCA 전달, 터널)은 지연이 끝나고 붙을 때까지 안 된다.
+- "4. Retry Wi-Fi Connection"(웹도 같다)을 누르면 남은 지연을 건너뛰고 바로 접속한다.
+- 바꾼 값은 다음 전원 투입부터 적용된다.
+- **확장기의 부팅 시간을 재서 맞춘다.** 제품에 따라 확장기가 상위 공유기에 다시 붙고 SSID를
+  내보내기까지 30초~1분 이상 걸리는 것도 있다. 짧으면 지연 없이 켠 것과 결과가 같다.
+- **이 값은 설정 블롭이 아니라 별도 NVS 키(`wifiBootDly`)에 저장된다.** 블롭은 이전 펌웨어(v13)와
+  바이트 단위로 같아서, 이 펌웨어로 올려도 이전 펌웨어로 되돌려 올려도 기존 설정이 초기화되지
+  않는다(이전 펌웨어는 모르는 키를 무시한다). 처음 올린 장비는 다른 설정은 그대로이고 이 값만
+  기본값(20초)이다. 자세한 이유는 `Storage.cpp`의 `kBlobSize` 주석 참고. 앞으로 설정을 추가할 때도
+  같은 방식을 쓰면 버전을 올릴 필요가 없다.
 
 Wi-Fi STA 연결 실패 시에도 Serial 메뉴는 계속 사용 가능하고, ESP32는 주기적으로 STA 재접속을
 시도한다. **AP는 STA 연결 여부와 무관하게 항상 켜져 있다** — `WiFi.mode(WIFI_AP_STA)`로
@@ -1436,7 +1459,8 @@ Watching for a response (Raw Byte Monitor)...
 
 1. Tunnel Settings -> Set Role `Camera side` (메뉴가 줄어든다)
 2. Set Peer IP = A의 IP
-3. Network Settings(WiFi), RS485 Settings(속도/DE-RE 핀)를 카메라에 맞춘다
+3. Network Settings(WiFi), RS485 Settings(속도/DE-RE 핀)를 카메라에 맞춘다. 무선랜 확장기와 같은
+   전원에 물려 있으면 Network Settings의 Boot Delay(기본 20초)를 확장기 부팅 시간에 맞춘다(12.1절)
 
 **A의 IP는 공유기에서 고정(예약)한다.** B는 Peer IP에서 온 패킷만 받으므로, A의 IP가 바뀌면
 링크가 조용히 끊긴 것처럼 보인다(`Last heard`가 `never`로 남는다).
@@ -1709,6 +1733,7 @@ arduino-esp32 내장만 쓴다), 중첩 객체와 배열까지 다루는 파서�
 | 항목 | 규칙 | 이유 |
 | --- | --- | --- |
 | `rs485.baud` | `RS485_BAUD_CHOICES`에 있는 값만 | 목록에 없는 값(예: 19200)을 넣으면 그 뒤로 Serial/웹 어디에도 지금 값에 해당하는 항목이 없어서, RS485 화면을 열어 저장하는 것만으로 보드레이트가 조용히 바뀐다 |
+| `wifi.boot_delay` | 0~600(초) | 실수로 큰 값을 넣으면 전원을 켤 때마다 그만큼 IP 쪽이 먹통이다 |
 | `wifi.ap_password` | 8자 이상 | WPA2가 8자 미만을 받지 않아 `softAP()`가 실패한다 — **AP 자체가 안 뜨고**, 웹이 유일한 접근 경로인 기기에서는 그게 곧 잠김이다 |
 | SSID/비밀번호 길이 | 필드 크기 초과면 거부 | 잘라 넣으면 조용히 접속만 안 되는 값이 된다 |
 | 열거값 | 삭제된 값(`input_protocol`의 4, 슬롯 `protocol`의 3) 제외한 범위 | 10.1절과 같은 이유 — 파일로 되살아나면 안 된다 |
