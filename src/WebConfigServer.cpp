@@ -715,7 +715,8 @@ void WebConfigServer::handleRoutingCamGet() {
 
   body += "<label><input type=\"checkbox\" name=\"auto_power_control\"";
   if (slot->autoPowerControl) body += " checked";
-  body += "> Auto Power Control (Standby when RS485 goes quiet, power on when it chatters)</label>";
+  body += "> Auto Power Control (Standby when RS485 goes quiet, power on when it chatters. "
+          "On a PELCO_D_TUNNEL slot it sends the EDIS power command through the tunnel)</label>";
 
   body += "<button type=\"submit\">Save</button></form>";
 

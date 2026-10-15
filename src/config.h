@@ -259,6 +259,12 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 // WiFi 재연결(kWifiRetryIntervalMs)처럼 포기하지 않고 낮은 빈도로 계속 재시도해 카메라가
 // 다시 응답하기 시작하면 자동으로 복구되게 한다.
 #define AUTO_POWER_RETRY_MAX_DELAY_MS (5UL * 60UL * 1000UL)
+// 터널 슬롯(4번 EDIS)은 위의 "확인될 때까지 무한 재시도"를 쓰지 않는다. 게이트웨이가 전원을
+// 직접 물어볼 수 없기 때문이다 - D7 응답에는 어느 질문의 답인지가 없어서, 끼워 넣은 조회의
+// 답을 컨트롤러가 자기 것으로 오해한다(main.cpp sniffBusFrame() 주석). 확인은 컨트롤러 자신의
+// 전원 조회 답을 엿들어서만 하고, 목표가 바뀔 때마다 AUTO_POWER_VERIFY_DELAY_MS 간격으로 최대
+// 이 횟수만 보낸다. Standby 쪽은 컨트롤러가 꺼져 있어 확인할 길이 없으니 이 횟수가 전부다.
+#define AUTO_POWER_TUNNEL_SENDS 3
 
 // ---- Pelco-D framing ----
 // Pelco-D 프레임은 항상 0xFF로 시작하고 길이가 고정 7바이트다
@@ -373,6 +379,17 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 // 이미 타임아웃을 냈을 것이다.
 #define TUNNEL_RESPONSE_MAX_AGE_MS 100
 #define TUNNEL_MAX_FRAME 32
+// 컨트롤러 쪽이 Stop을 처음 보낸 뒤 다시 보내는 시점(ms). **간격을 벌린다** - 예전에는
+// 연달아 두 번 보냈는데, WiFi가 잠깐 막히거나 카메라 쪽 RS485에서 카메라 응답과 겹치면
+// 두 개가 같이 사라져 카메라가 계속 흘렀다. 300ms에 걸쳐 흩어 놓으면 짧은 끊김 하나로는
+// 다 잃지 않는다. 그 사이 같은 카메라에 다른 명령이 오면 남은 재전송은 취소한다.
+constexpr uint16_t TUNNEL_STOP_REPEAT_MS[] = {40, 120, 300};
+constexpr uint8_t TUNNEL_STOP_REPEAT_COUNT =
+    sizeof(TUNNEL_STOP_REPEAT_MS) / sizeof(TUNNEL_STOP_REPEAT_MS[0]);
+// 카메라 쪽: 카메라가 응답을 보내는 중이면 끝날 때까지 기다렸다가 명령을 RS485에 쓴다.
+// 반이중 버스라 겹치면 둘 다 깨진다. 무한정 미루지 않도록 이 시간이 지나면 그냥 쓴다.
+#define TUNNEL_CAMERA_QUIET_MAX_WAIT_MS 30
+#define TUNNEL_CAMERA_TX_QUEUE 4
 
 // 이동/줌/포커스 명령의 유효 기간. 브라우저는 물리 조이스틱과 달리 "손을 놓으면
 // 중심으로 돌아온다"는 보장이 없다 - Wi-Fi가 끊기거나 탭이 죽으면 마지막 이동 명령이

@@ -125,6 +125,8 @@ unsigned long autoPowerActionDueMs[CAMERA_SLOT_COUNT] = {};  // 다음 송신/�
 // 현재 재시도 간격(backoff) - 실패할 때마다 두 배로 늘어 AUTO_POWER_RETRY_MAX_DELAY_MS에서
 // 멈춘다. 목표에 도달하면(confirmed==target) AUTO_POWER_VERIFY_DELAY_MS로 되돌아간다.
 unsigned long autoPowerRetryDelayMs[CAMERA_SLOT_COUNT] = {};
+// 터널 슬롯: 지금 목표로 전원 명령을 몇 번 보냈나 (AUTO_POWER_TUNNEL_SENDS가 상한).
+uint8_t autoPowerTunnelSends[CAMERA_SLOT_COUNT] = {};
 
 void resetAutoPowerControl() {
   for (uint8_t i = 0; i < CAMERA_SLOT_COUNT; i++) {
@@ -133,7 +135,14 @@ void resetAutoPowerControl() {
     autoPowerAwaitingVerify[i] = false;
     autoPowerActionDueMs[i] = 0;
     autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;
+    autoPowerTunnelSends[i] = 0;
   }
+}
+
+// 자동 전원 대상인가. VISCA 슬롯(6번 FoMaKo 등)과 Pelco-D 터널 슬롯(4번 EDIS) 둘 다다 -
+// 판단 기준(버스가 재잘거리는가)은 같고, 명령과 확인 경로만 다르다(reconcileAutoPower()).
+bool autoPowerEligible(const CameraSlot* slot) {
+  return slot != nullptr && slot->autoPowerControl && (slot->isConfigured() || slot->isTunnel());
 }
 
 // 텀블링 10초 윈도우 안에서 관측된 유효 패킷 수. handleViscaPacket/handlePelcoDPacket/
@@ -369,6 +378,12 @@ void prepareWifiRadio() {
   // AP_STA로 하는 이유는 WebConfigServer의 AP를 STA와 동시에 띄우기 위함이다.
   WiFi.mode(WIFI_AP_STA);
   applyWifiTxPower();
+  // **WiFi 절전(modem sleep)을 끈다.** arduino-esp32는 STA를 켜면 기본으로 절전을 걸어,
+  // 라디오가 AP 비컨 주기(보통 약 100ms)에 맞춰 깨어날 때만 받는다. 그 사이에 온 패킷은
+  // AP에 쌓였다가 늦게 들어온다. 터널은 컨트롤러 질문 -> 카메라 응답이 WiFi를 두 번 왕복하고,
+  // 그게 컨트롤러가 기다리는 시간 안에 들어와야 정보 표시가 된다 - 4번 표시가 가끔 비는
+  // 원인 후보다. 이 장치는 상시 전원이라 절전으로 얻는 게 없다.
+  WiFi.setSleep(false);
   // **같은 SSID의 AP가 여러 대면 가장 센 것에 붙는다.** 기본값(FAST_SCAN)은 채널 순서로
   // 처음 찾은 AP에 바로 붙는데, 현장에서 DongBroad가 -42dBm/-85dBm 두 대로 보였고 먼
   // 쪽을 잡아 AUTH_EXPIRE만 반복하며 15초를 날렸다. 그동안 STA가 채널을 훑느라 같은
@@ -1359,6 +1374,10 @@ bool sniffBusFrame(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, uint8_t data
     if (q.data2 == VISCA_CAM_POWER) {
       c.power = data2;
       markModeKnown(camNumber, MODE_KNOWN_POWER);
+      // 터널 슬롯 자동 전원의 유일한 확인 경로다 - 컨트롤러가 물은 전원 조회의 진짜 답.
+      // 버스의 실물 카메라(1/2/3번)에도 채워지지만 그쪽은 자동 전원 대상이 아니라 쓰이지 않는다.
+      if (data2 == 0x02) autoPowerConfirmed[camNumber - 1] = AutoPowerState::ON;
+      else if (data2 == 0x03) autoPowerConfirmed[camNumber - 1] = AutoPowerState::OFF;
     } else if (q.data2 == VISCA_CAM_BACKLIGHT) {
       c.backlight = data2;
       markModeKnown(camNumber, MODE_KNOWN_BACKLIGHT);
@@ -2038,7 +2057,7 @@ void updateAutoPowerFromChatter() {
 
   for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
     CameraSlot* slot = routingTable.camera(camNumber);
-    if (slot == nullptr || !slot->isConfigured() || !slot->autoPowerControl) continue;
+    if (!autoPowerEligible(slot)) continue;
 
     uint8_t i = camNumber - 1;
     AutoPowerState desired = autoPowerTarget[i];
@@ -2052,6 +2071,7 @@ void updateAutoPowerFromChatter() {
       autoPowerAwaitingVerify[i] = false;                      // 새 목표 - 명령부터 다시 보낸다
       autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;    // backoff 초기화
       autoPowerActionDueMs[i] = now;                            // 다음 reconcile tick에 바로 시도
+      autoPowerTunnelSends[i] = 0;
     }
   }
 }
@@ -2074,12 +2094,33 @@ void reconcileAutoPower() {
 
   for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
     CameraSlot* slot = routingTable.camera(camNumber);
-    if (slot == nullptr || !slot->isConfigured() || !slot->autoPowerControl) continue;
+    if (!autoPowerEligible(slot)) continue;
 
     uint8_t i = camNumber - 1;
     if (autoPowerTarget[i] == AutoPowerState::UNKNOWN) continue;    // 아직 청취 판정 전
     if (autoPowerConfirmed[i] == autoPowerTarget[i]) continue;      // 이미 목표대로 확인됨
     if ((long)(now - autoPowerActionDueMs[i]) < 0) continue;        // 아직 때가 안 됨
+
+    // 터널 슬롯(EDIS): VISCA가 아니라 컨트롤러가 쓰는 것과 같은 EDIS 전원 SET(C3 00 02/03)을
+    // 터널로 보낸다. 웹 제어 패널의 전원 버튼과 같은 경로다(webSetMode). 확인 조회는 끼워
+    // 넣지 않는다 - 확인은 sniffBusFrame()이 컨트롤러의 전원 조회 답을 엿들어 confirmed를
+    // 채울 때만 일어나고, 그 전까지 정해진 횟수만 다시 보낸다(AUTO_POWER_TUNNEL_SENDS).
+    if (slot->isTunnel()) {
+      if (autoPowerTunnelSends[i] >= AUTO_POWER_TUNNEL_SENDS) continue;
+      bool on = (autoPowerTarget[i] == AutoPowerState::ON);
+      String err;
+      if (webSetMode(camNumber, /*viaIp=*/false, VISCA_CAM_POWER, VISCA_CAM_POWER,
+                     on ? 0x02 : 0x03, &err)) {
+        if (cfg.debugMode) {
+          Serial.print("[AUTO-POWER] CAM");
+          Serial.print(camNumber);
+          Serial.println(on ? " -> On (EDIS via tunnel)" : " -> Standby (EDIS via tunnel)");
+        }
+      }
+      autoPowerTunnelSends[i]++;
+      autoPowerActionDueMs[i] = now + AUTO_POWER_VERIFY_DELAY_MS;
+      continue;
+    }
 
     if (!autoPowerAwaitingVerify[i]) {
       // 명령을 보낸다 - 실패해도(네트워크 순간 문제 등) 다음 재시도 tick에 다시 시도된다.

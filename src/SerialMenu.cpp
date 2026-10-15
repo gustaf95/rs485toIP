@@ -865,7 +865,10 @@ void SerialMenu::printTunnelMenu() {
   if (cameraSide) {
     Serial.print("  Failsafe Stops   : "); Serial.println(st.failsafeStops);
     Serial.print("  Noise bytes      : "); Serial.println(st.noiseDiscarded);
+    // 0이 아니면 카메라 응답과 명령이 겹칠 뻔했던 횟수 - 예전 펌웨어라면 그만큼 명령이 씹혔다.
+    Serial.print("  Waited for camera: "); Serial.println(st.cameraBusyWaits);
   } else {
+    Serial.print("  Stop repeats     : "); Serial.println(st.stopRepeats);
     Serial.print("  Responses relayed: "); Serial.println(st.relayed);
     Serial.print("  Dropped (no cmd) : "); Serial.println(st.droppedUnsolicited);
     Serial.print("  Dropped (stale)  : "); Serial.println(st.droppedStale);

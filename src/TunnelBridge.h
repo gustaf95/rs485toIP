@@ -35,6 +35,8 @@ class TunnelBridge {
     uint32_t droppedUnsolicited = 0;  // 컨트롤러 쪽: 질문 없이 온 응답을 버림
     uint32_t droppedStale = 0;        // 컨트롤러 쪽: 버스가 안 비어서 늦어진 응답을 버림
     uint32_t failsafeStops = 0;       // 카메라 쪽: 링크 단절로 스스로 낸 Stop
+    uint32_t stopRepeats = 0;         // 컨트롤러 쪽: 간격을 두고 다시 보낸 Stop
+    uint32_t cameraBusyWaits = 0;     // 카메라 쪽: 카메라가 말하는 중이라 미뤘다 쓴 명령
     unsigned long lastPeerMs = 0;     // 상대에게서 마지막으로 무언가 들은 시각 (0 = 아직 없음)
   };
 
@@ -74,6 +76,12 @@ class TunnelBridge {
   uint8_t _pendingLen = 0;
   unsigned long _pendingMs = 0;
   unsigned long _lastHeartbeatMs = 0;
+  // Stop 재전송 (TUNNEL_STOP_REPEAT_MS). 터널 슬롯은 보통 하나라 한 건만 추적한다.
+  bool _stopPending = false;
+  uint8_t _stopFrame[PELCO_D_PACKET_LEN];
+  IPAddress _stopIp;
+  uint8_t _stopRepeatIdx = 0;
+  unsigned long _stopMs = 0;
 
   // 카메라 쪽
   uint8_t _rxBuf[TUNNEL_MAX_FRAME];
@@ -82,8 +90,21 @@ class TunnelBridge {
   bool _moving = false;
   uint8_t _movingAddr = 0;
   unsigned long _lastCommandMs = 0;
+  // 카메라가 조용해지길 기다리는 명령들
+  struct QueuedFrame {
+    uint8_t data[TUNNEL_MAX_FRAME];
+    uint8_t len;
+    unsigned long queuedMs;
+    bool waited;  // 한 번이라도 카메라가 말하는 중이라 미뤄졌나 (cameraBusyWaits)
+  };
+  QueuedFrame _txQueue[TUNNEL_CAMERA_TX_QUEUE];
+  uint8_t _txHead = 0;
+  uint8_t _txCount = 0;
 
   bool sendTo(const IPAddress& ip, const uint8_t* data, uint8_t len);
+  // EDIS 컨트롤러가 쉬지 않고 보내는 상태 조회(CMND2 = 0xD3). Stop 재전송을 취소하지 않는다.
+  static bool isPoll(const uint8_t* f, uint8_t len);
+  void writeQueuedToCamera(Rs485Port& rs485, uint32_t baud);
 };
 
 extern TunnelBridge tunnelBridge;

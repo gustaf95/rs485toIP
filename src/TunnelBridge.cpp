@@ -13,6 +13,10 @@ bool TunnelBridge::isStop(const uint8_t* f, uint8_t len) {
          f[4] == 0 && f[5] == 0;
 }
 
+bool TunnelBridge::isPoll(const uint8_t* f, uint8_t len) {
+  return len == PELCO_D_PACKET_LEN && f[0] == PELCO_D_START_BYTE && f[3] == 0xD3;
+}
+
 bool TunnelBridge::isMovement(const uint8_t* f, uint8_t len) {
   if (len != PELCO_D_PACKET_LEN || f[0] != PELCO_D_START_BYTE) return false;
   uint8_t c1 = f[2];
@@ -54,9 +58,19 @@ void TunnelBridge::forwardFromBus(const CameraSlot& slot, const uint8_t* frame, 
   IPAddress ip = slot.ip.toIPAddress();
 
   bool ok = sendTo(ip, frame, len);
-  // Stop은 유실되면 카메라가 계속 도는 유일한 명령이라 한 번 더 보낸다. 같은 프레임이
-  // 두 번 나가도 카메라에는 해가 없다.
-  if (isStop(frame, len)) sendTo(ip, frame, len);
+
+  // Stop은 유실되면 카메라가 계속 도는 유일한 명령이라 간격을 두고 다시 보낸다
+  // (TUNNEL_STOP_REPEAT_MS, pollController()). 같은 Stop이 여러 번 가도 카메라에는 해가 없다.
+  if (isStop(frame, len)) {
+    memcpy(_stopFrame, frame, PELCO_D_PACKET_LEN);
+    _stopIp = ip;
+    _stopRepeatIdx = 0;
+    _stopMs = millis();
+    _stopPending = true;
+  } else if (_stopPending && len >= 2 && frame[1] == _stopFrame[1] && !isPoll(frame, len)) {
+    // 그 카메라에 새 명령(이동, 프리셋 호출 등)이 왔다. 늦게 도착한 Stop이 그걸 끊으면 안 된다.
+    _stopPending = false;
+  }
 
   if (ok) _stats.txFrames++;
   _lastForwardMs = millis();
@@ -75,6 +89,12 @@ void TunnelBridge::pollController(RoutingTable& routing, Rs485Port& rs485,
       const CameraSlot& s = cfg.cameras[i];
       if (s.isTunnel()) sendTo(s.ip.toIPAddress(), &hb, 1);
     }
+  }
+
+  if (_stopPending && (now - _stopMs) >= TUNNEL_STOP_REPEAT_MS[_stopRepeatIdx]) {
+    sendTo(_stopIp, _stopFrame, PELCO_D_PACKET_LEN);
+    _stats.stopRepeats++;
+    if (++_stopRepeatIdx >= TUNNEL_STOP_REPEAT_COUNT) _stopPending = false;
   }
 
   // 받는 쪽: 터널 슬롯의 IP에서 온 것만 받는다.
@@ -153,7 +173,21 @@ void TunnelBridge::pollCamera(const SystemConfig& cfg, Rs485Port& rs485) {
     } else if (isStop(buf, (uint8_t)n)) {
       _moving = false;
     }
-    rs485.writePacket(buf, (uint8_t)n);
+
+    // 바로 쓰지 않고 줄 세운다 - 카메라가 응답을 보내는 중일 수 있다(아래 writeQueuedToCamera).
+    // 줄이 꽉 찼으면(카메라가 오래 말하는 이상 상황) 맨 앞 것을 기다리지 않고 내보내 자리를 낸다.
+    if (_txCount == TUNNEL_CAMERA_TX_QUEUE) {
+      QueuedFrame& head = _txQueue[_txHead];
+      rs485.writePacket(head.data, head.len);
+      _txHead = (_txHead + 1) % TUNNEL_CAMERA_TX_QUEUE;
+      _txCount--;
+    }
+    QueuedFrame& slot = _txQueue[(_txHead + _txCount) % TUNNEL_CAMERA_TX_QUEUE];
+    memcpy(slot.data, buf, (size_t)n);
+    slot.len = (uint8_t)n;
+    slot.queuedMs = now;
+    slot.waited = false;
+    _txCount++;
   }
 
   // RS485 -> IP: 프레임 길이를 가정하지 않는다(4바이트 ACK도 7바이트 D7 응답도 있다).
@@ -169,6 +203,18 @@ void TunnelBridge::pollCamera(const SystemConfig& cfg, Rs485Port& rs485) {
     }
     if (_rxLen < sizeof(_rxBuf)) _rxBuf[_rxLen++] = b;
     _lastRxByteMs = now;
+
+    // 완결된 7바이트 Pelco-D 프레임(EDIS D7 응답 등)이면 조용한 간격을 기다리지 않고 바로
+    // 보낸다. 컨트롤러는 응답을 짧게만 기다리므로 몇 ms라도 아낀다. 4바이트 ACK는 7바이트의
+    // 앞부분과 구분이 안 되니 아래의 간격 규칙에 맡긴다.
+    if (_rxLen == PELCO_D_PACKET_LEN && _rxBuf[0] == PELCO_D_START_BYTE) {
+      uint8_t sum = 0;
+      for (uint8_t i = 1; i < PELCO_D_PACKET_LEN - 1; i++) sum += _rxBuf[i];
+      if (sum == _rxBuf[PELCO_D_PACKET_LEN - 1]) {
+        if (havePeer && sendTo(peer, _rxBuf, _rxLen)) _stats.txFrames++;
+        _rxLen = 0;
+      }
+    }
   }
   if (_rxLen > 0 && (now - _lastRxByteMs) >= quietGapMs(cfg.rs485Baudrate)) {
     if (havePeer) {
@@ -176,6 +222,8 @@ void TunnelBridge::pollCamera(const SystemConfig& cfg, Rs485Port& rs485) {
     }
     _rxLen = 0;
   }
+
+  writeQueuedToCamera(rs485, cfg.rs485Baudrate);
 
   // 상대에게 생존 신호
   if (havePeer && (now - _lastHeartbeatMs) >= TUNNEL_HEARTBEAT_MS) {
@@ -191,4 +239,31 @@ void TunnelBridge::pollCamera(const SystemConfig& cfg, Rs485Port& rs485) {
     _moving = false;
     _stats.failsafeStops++;
   }
+}
+
+// 줄 선 명령을 카메라가 조용할 때 하나 쓴다.
+//
+// **카메라 쪽 RS485는 반이중이다.** 유선일 때는 컨트롤러가 응답을 기다렸다 다음 명령을
+// 보내서 겹칠 일이 없었는데, 터널에서는 WiFi 지연 때문에 그 박자가 어긋난다 - 컨트롤러가
+// 쉬지 않고 보내는 D3 조회에 카메라가 D7로 답하는 바로 그 순간 다음 명령이 도착할 수 있다.
+// 그대로 쓰면 둘이 선 위에서 겹쳐 카메라는 깨진 명령을 버리고, 아무 카운터에도 남지 않는다.
+// 그게 Stop이면 카메라가 계속 흐른다.
+//
+// 한 번에 하나만 쓴다. 쓴 직후 카메라가 답을 시작할 수 있으니 다음 것은 다음 회전에서 다시
+// 조용한지 본다. 이 장치가 쓰는 동안에는 수신이 꺼져 자기 바이트가 _lastRxByteMs를 건드리지 않는다.
+void TunnelBridge::writeQueuedToCamera(Rs485Port& rs485, uint32_t baud) {
+  if (_txCount == 0) return;
+  unsigned long now = millis();
+  QueuedFrame& head = _txQueue[_txHead];
+
+  bool cameraTalking = (_rxLen > 0) || (now - _lastRxByteMs) < quietGapMs(baud);
+  if (cameraTalking && (now - head.queuedMs) < TUNNEL_CAMERA_QUIET_MAX_WAIT_MS) {
+    head.waited = true;
+    return;
+  }
+  if (head.waited) _stats.cameraBusyWaits++;
+
+  rs485.writePacket(head.data, head.len);
+  _txHead = (_txHead + 1) % TUNNEL_CAMERA_TX_QUEUE;
+  _txCount--;
 }
