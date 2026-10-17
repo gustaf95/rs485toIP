@@ -356,6 +356,40 @@ void pollWebRs485Tx() {
   }
 }
 
+// 버스 생존 신호 (config.h BUS_KEEPALIVE_* 참고). 웹 송신 큐를 태워 버스 유휴 규칙을
+// 그대로 따른다. 카메라의 답도 프레임이라 lastBusFrameMs를 갱신하지만, 답이 없을 때도
+// 간격이 지켜지도록 마지막 송신 시각을 따로 둔다.
+unsigned long lastBusKeepaliveMs = 0;
+
+void pollBusKeepalive() {
+  const SystemConfig& cfg = routingTable.get();
+  if (cfg.inputProtocol != InputProtocol::PELCO_D && cfg.inputProtocol != InputProtocol::PELCO_AUTO) {
+    return;
+  }
+  // 1번이 IP 카메라나 터널이면 이 버스에 실물이 없다 - 물어볼 상대가 없다.
+  const CameraSlot* slot = routingTable.camera(BUS_KEEPALIVE_CAM);
+  if (slot == nullptr || slot->isConfigured() || slot->isTunnel()) return;
+
+  unsigned long now = millis();
+  if (now - lastBusFrameMs < BUS_KEEPALIVE_INTERVAL_MS) return;
+  if (now - lastBusKeepaliveMs < BUS_KEEPALIVE_INTERVAL_MS) return;
+  lastBusKeepaliveMs = now;
+
+  uint8_t frame[PELCO_D_PACKET_LEN] = {PELCO_D_START_BYTE, BUS_KEEPALIVE_CAM, 0x00,
+                                       PELCO_EDIS_QUERY_CMD, PELCO_EDIS_QUERY_MODE_STATUS, 0xE6, 0};
+  uint8_t sum = 0;
+  for (uint8_t i = 1; i < PELCO_D_PACKET_LEN - 1; i++) sum += frame[i];
+  frame[PELCO_D_PACKET_LEN - 1] = sum;
+  webTxEnqueue(frame, /*priority=*/false);
+
+  if (cfg.debugMode) {
+    Serial.print("[KEEPALIVE] CAM");
+    Serial.print(BUS_KEEPALIVE_CAM);
+    Serial.print(" <- ");
+    Serial.println(viscaBytesToHex(frame, PELCO_D_PACKET_LEN));
+  }
+}
+
 const char* protocolTag(ProtocolMode mode) {
   switch (mode) {
     case ProtocolMode::IP_VISCA_RAW_UDP: return "UDP";
@@ -2496,6 +2530,7 @@ void loop() {
 
   // 웹 컨트롤러. 송신 큐가 버스 유휴를 기다리고 있고, 브라우저가 갱신을 멈춘 움직임은
   // deadman이 대신 멈춘다. 웹을 아무도 안 쓰면 둘 다 즉시 반환한다.
+  pollBusKeepalive();
   pollWebRs485Tx();
   pollWebDeadman();
 
