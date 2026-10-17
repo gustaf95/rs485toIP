@@ -50,12 +50,12 @@ FoMaKo 매뉴얼 기준 확인된 제어 정보는 다음과 같다.
 
 ## 3.1 지원 보드와 UART 사용
 
-두 보드를 지원한다. **기본 타겟은 ESP32-C3 Super Mini**이고, ESP32 클래식은 이미 설치된
-장비를 위해 남겨둔다.
+두 보드를 지원한다. **기본 타겟은 ESP32 클래식(`esp32dev`)**이고, ESP32-C3 Super Mini는
+`-e esp32c3_supermini`로 빌드한다.
 
 ```bash
-pio run                  # ESP32-C3 Super Mini (기본)
-pio run -e esp32dev      # ESP32 클래식
+pio run                          # ESP32 클래식 (기본)
+pio run -e esp32c3_supermini     # ESP32-C3 Super Mini
 ```
 
 빌드 산출물은 `.pio/`가 아니라 `C:/pio-build/<프로젝트해시>`에 쌓인다. **이 프로젝트 경로에 한글이 섞여
@@ -70,14 +70,14 @@ pio run -e esp32dev      # ESP32 클래식
 IDE만 에러를 내므로 헷갈리기 쉽다). 다음으로 다시 만든다:
 
 ```bash
-pio project init --ide vscode -e esp32c3_supermini
+pio project init --ide vscode -e esp32dev
 ```
 
 보드마다 다른 사실(어느 UART를 쓰는지, 기본 GPIO, 예약 핀 목록)은 전부
 [BoardProfile.h](src/BoardProfile.h) 한 곳에 있다. **다른 파일에 GPIO 번호나 UART 번호를
 직접 적으면 안 된다** — 보드를 늘릴 때 반드시 한 곳을 빠뜨린다.
 
-### ESP32-C3 Super Mini (기본)
+### ESP32-C3 Super Mini (esp32c3_supermini)
 
 | 용도                   | 인터페이스            | 기본 핀                   | 설명                          |
 | ---------------------- | --------------------- | ------------------------- | ----------------------------- |
@@ -108,7 +108,7 @@ pio project init --ide vscode -e esp32c3_supermini
 - **핀이 13개뿐이다.** Super Mini에서 실제로 뽑혀 나오는 것은 GPIO0~10, 20, 21이다.
   11~17은 패키지 내장 SPI 플래시가, 18/19는 USB D-/D+가 쓴다.
 
-### ESP32 클래식 (esp32dev)
+### ESP32 클래식 (esp32dev, 기본)
 
 | 용도                   | ESP32 인터페이스 | 기본 핀                    | 설명                              |
 | ---------------------- | ---------------- | -------------------------- | --------------------------------- |
@@ -821,7 +821,7 @@ Network Settings의 "3. Set DHCP / Static IP"를 선택하면 진입하는 서�
   0. Back to Main Menu
 ```
 
-(위는 기본 타겟인 ESP32-C3 Super Mini의 값이다. `-e esp32dev`로 빌드하면 `Board`,
+(위는 ESP32-C3 Super Mini(`-e esp32c3_supermini`)의 값이다. 기본 타겟인 `esp32dev`로 빌드하면 `Board`,
 `UART Port`, 핀 기본값이 클래식 것으로 바뀐다 — 3.1절 참고.)
 
 Baudrate/RX Pin/TX Pin/DE-RE Pin은 값을 입력하는 즉시 flash에 저장되고 UART에 재적용되며,

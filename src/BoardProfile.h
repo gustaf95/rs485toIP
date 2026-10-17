@@ -7,8 +7,8 @@
 // 가장 위험했던 게 그런 종류의 누락이었다(아래 UART 번호 주석 참고).
 //
 // 지원 대상:
-//   - ESP32 클래식 (esp32dev)          : 기존 설치 장비
-//   - ESP32-C3 Super Mini (esp32c3_supermini) : 신규 기본 타겟
+//   - ESP32 클래식 (esp32dev)          : 기본 타겟, 기존 설치 장비
+//   - ESP32-C3 Super Mini (esp32c3_supermini)
 //
 // 새 보드를 추가할 때 손댈 곳은 이 파일 하나여야 한다.
 

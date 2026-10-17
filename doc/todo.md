@@ -458,8 +458,8 @@ AP 차단 확인)는 버스에 아무것도 내보내지 않으므로 안전하�
 펌웨어가 올라가 있어야 동작한다.
 
 ```bash
-pio run -t upload            # ESP32-C3 Super Mini
-pio run -e esp32dev -t upload  # ESP32 클래식
+pio run -e esp32c3_supermini -t upload  # ESP32-C3 Super Mini
+pio run -t upload                       # ESP32 클래식 (기본)
 ```
 
 C3에서 초기에 봐둘 것 둘:
