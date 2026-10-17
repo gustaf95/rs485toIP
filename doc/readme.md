@@ -1133,6 +1133,24 @@ RX/TX/DE-RE와 Status LED 핀 입력에 같은 규칙이 적용된다. 규칙은
 3.4절 참고. 숫자 항목이 이미 1~9로 다 차서 이 항목만 문자 `a`를 쓴다 — 기존 항목을
 다시 번호 매기면 손에 익은 순서와 이 문서의 메뉴 캡처가 전부 어긋난다.
 
+### 12.2.4 버스 생존 신호 (설정 없음, 항상 켜짐)
+
+버스가 오래 조용하면 ZU-EPC7000이 슬립에 들어가는 경우가 있다. 그래서 체크섬을 통과한
+프레임이 **10분 동안 하나도 없으면** 게이트웨이가 1번 카메라에 모드 상태 조회
+`FF 01 00 D3 19 E6 D3`을 보내고, 버스가 계속 조용하면 10분마다 반복한다
+(`BUS_KEEPALIVE_CAM` / `BUS_KEEPALIVE_INTERVAL_MS`, `pollBusKeepalive()`).
+
+- 컨트롤러가 폴링하는 동안에는 나가지 않는다. 송신은 웹 컨트롤러와 같은 큐를 타서
+  버스가 30ms 이상 조용할 때만 끼어든다(14절).
+- **`D3 19`를 고른 이유.** 게이트웨이가 원래 조회를 끼워 넣지 않는 것은 `D3 04`의 답에
+  항목이 적혀 있지 않아서다. `D3 19`의 답(`D7 19`)은 항목을 담고 있어 컨트롤러가 자기
+  질문의 답으로 오해할 수 없다. 답은 1번 상태 캐시도 갱신한다.
+- 1번 슬롯이 IP 카메라나 터널이면, 또는 Input Protocol이 Pelco-D/Autodetect가 아니면
+  보내지 않는다. 카메라 쪽 터널 장치도 보내지 않는다.
+- 카메라의 답은 패킷 1개라 Auto Power의 판단 보류 구간(1~2개)에 들어간다 - 켜고 끄는
+  판단을 뒤집지 않는다.
+- Debug Mode에서 `[KEEPALIVE] CAM1 <- FF 01 00 D3 19 E6 D3` 로그가 남는다.
+
 ## 12.3 Routing Table
 
 ```text
@@ -1600,7 +1618,7 @@ Serial 메뉴 화면과 1:1로 대응하되, 여러 단계 프롬프트 대신 �
 
 | 경로 | Serial 대응 | 비고 |
 |---|---|---|
-| `GET /` | Main Menu 상태 블록 | Board(어느 보드용 펌웨어인지), Wi-Fi(STA/AP) 상태, Debug Mode, 각 페이지 링크 |
+| `GET /` | Main Menu 상태 블록 | Board(어느 보드용 펌웨어인지), Wi-Fi(STA/AP) 상태(STA는 연결 시 신호 세기 dBm 포함), Debug Mode, 각 페이지 링크 |
 | `GET`/`POST /network` | Network Settings | SSID(**직전 스캔** 드롭다운 + 직접 입력, 13.5절), Password(빈 칸 = 기존 유지), DHCP, Static IP/Gateway/Subnet, Retry 버튼, AP SSID/Password(별도 폼, `POST /network/ap`) |
 | `GET`/`POST /rs485` | RS485 Settings | Board/UART 표시, Baudrate, Signal Inversion, RX/TX/DE-RE Pin(서버에서 `validateRs485Pin()`으로 검증), Input Protocol, Pelco Response Mode, Camera Response Mode, Status LED Pin/Logic, **Pelco-D 터널**(Role / UDP Port / Peer IP / Noise Filter, 12.6절) |
 | `GET /routing` | Routing Table | CAM1~7 목록 |
@@ -1867,8 +1885,9 @@ ZU-EPC7000 물리 컨트롤러를 그대로 옮긴 제어 패널이다. 브라�
   RS485 Pelco-D 마스터 프레임으로 나간다. 설정 필드는 새로 만들지 않았다(10.1절의 이유).
 - **RS485로 나갈 때는 버스가 30ms 이상 조용할 때만 끼어든다**(`WEB_TX_BUS_IDLE_MS`).
   이 버스에는 ZU-EPC7000이 이미 마스터로 있고, 게이트웨이는 자기 송신 중에 버스를 들을 수
-  없어 충돌을 감지할 방법이 없다. 조회(`D3`)는 절대 내보내지 않는다 — 그 답을 컨트롤러가
-  자기 질문의 답으로 오해한다.
+  없어 충돌을 감지할 방법이 없다. 웹은 조회(`D3`)를 내보내지 않는다 — 그 답을 컨트롤러가
+  자기 질문의 답으로 오해한다. 유일한 예외는 버스가 10분간 조용할 때의 생존 신호(`D3 19`,
+  12.2.4절)다.
 - **상태 표시는 추가 트래픽 없이 얻는다.** 컨트롤러가 폴링하는 `D3` 질문과 카메라의 `D7`
   응답을 둘 다 엿들어(`sniffBusFrame()`) 모드 캐시를 채운다. 한 번도 관측 못 한 항목은
   `-`로 표시한다.
