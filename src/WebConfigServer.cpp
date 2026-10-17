@@ -308,7 +308,8 @@ void WebConfigServer::handleStatus() {
   body += "<tr><td>Built</td><td>";
   body += firmwareBuildTime();
   body += "</td></tr>";
-  body += "<tr><td>Wi-Fi (STA)</td><td>" + String(connected ? "Connected" : "Disconnected") + "</td></tr>";
+  body += "<tr><td>Wi-Fi (STA)</td><td>" +
+          String(connected ? "Connected (" + String(WiFi.RSSI()) + " dBm)" : "Disconnected") + "</td></tr>";
   body += "<tr><td>ESP32 IP (STA)</td><td>" +
           String(connected ? WiFi.localIP().toString() : "Not assigned") + "</td></tr>";
   body += "<tr><td>AP SSID</td><td>" + htmlEscape(WiFi.softAPSSID()) + "</td></tr>";
