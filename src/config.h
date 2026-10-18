@@ -245,10 +245,14 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 // 쓴다 - 슬라이딩 윈도우만큼 정밀하지 않지만 타임스탬프 배열이 필요 없어 임베디드
 // 환경에 더 단순하고, 최대 오차(윈도우 길이 이내)도 이 용도에는 문제가 안 된다.
 #define AUTO_POWER_CHATTER_WINDOW_MS 10000
-// 윈도우 안에 이 값 이상의 유효 패킷이 있으면 On, 하나도 없으면 Standby. 그 사이
-// (1~2개)는 판단을 보류하고 직전 상태를 유지한다 - 어느 쪽으로도 결론 내리기엔
-// 근거가 애매한 경계 구간이라, 상태를 자주 뒤집는 것보다 유지하는 쪽이 안전하다.
+// 윈도우 안에 이 값 이상의 유효 패킷이 있으면 On. 그보다 적으면 켜는 쪽으로는 아무것도
+// 하지 않는다 - Standby는 윈도우가 아니라 아래 침묵 + 생존 신호로만 판단한다.
 #define AUTO_POWER_ON_THRESHOLD 3
+// 유효 패킷이 이 시간 동안 하나도 없으면 버스가 조용해진 것으로 보고, 바로 끄지 않고
+// 1번 카메라에 생존 신호를 묻는다(아래 BUS_KEEPALIVE_*). ZU-EPC7000은 슬립에 들어가도
+// 버스가 조용해지므로, 침묵만으로는 "컨트롤러가 꺼졌다"와 "잠들었다"를 가를 수 없다.
+// 1번이 답하면 장비 전원은 살아 있는 것이라 그대로 두고, 답이 없을 때만 Standby로 간다.
+#define AUTO_POWER_QUIET_MS 30000
 // CAM_Power On/Standby 명령을 보낸 뒤 실제로 반영됐는지 CAM_PowerInq로 확인하기까지
 // 기다리는 시간 - 명령을 보내자마자 상태를 낙관적으로 갱신하지 않고, 카메라가 명령을
 // 처리할 시간을 준 뒤 실측으로 확정한다(main.cpp의 reconcileAutoPower() 참고).
@@ -360,13 +364,19 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 #define WEB_TX_QUEUE_DEPTH 8
 
 // ---- 버스 생존 신호 ----
-// 버스가 오래 조용하면 ZU-EPC7000이 슬립에 들어가는 경우가 있다. 체크섬을 통과한 프레임이
-// 이 시간 동안 하나도 없으면 BUS_KEEPALIVE_CAM에 모드 상태 조회(D3 19)를 하나 보내고,
-// 조용한 동안은 같은 간격으로 반복한다. D3 04와 달리 D3 19의 답(D7 19)은 항목이 적혀
-// 있어서, 컨트롤러가 그 답을 자기 질문의 답으로 오해할 일이 없다. 답은 패킷 1개라
-// Auto Power의 판단 보류 구간(1~2개)에 들어간다 - 켜고 끄는 판단을 뒤집지 않는다.
+// 버스가 AUTO_POWER_QUIET_MS 동안 조용하면 BUS_KEEPALIVE_CAM에 모드 상태 조회(D3 19)를
+// 보내고, 조용한 동안은 BUS_KEEPALIVE_INTERVAL_MS마다 다시 묻는다. 답이 없으면 Auto Power
+// 슬롯을 Standby로 내린다(main.cpp pollBusKeepalive()). 그 사이 버스에 유효 패킷이 하나라도
+// 오면 묻기를 멈추고 평소 감지로 돌아간다. D3 04와 달리 D3 19의 답(D7 19)은 항목이 적혀
+// 있어서, 컨트롤러가 그 답을 자기 질문의 답으로 오해할 일이 없다. 이 답은 버스 활동으로
+// 세지 않는다 - 세면 우리가 부른 답 때문에 "조용함"이 깨진다.
 #define BUS_KEEPALIVE_CAM 1
 #define BUS_KEEPALIVE_INTERVAL_MS (10UL * 60UL * 1000UL)
+// 한 번 물을 때 답을 기다리는 시간과 시도 횟수. 송신 큐가 유휴를 기다리는 시간(최대
+// WEB_TX_MAX_WAIT_MS)을 포함한다. 프레임 하나가 잡음에 깨졌다고 카메라를 끄지 않도록
+// 여러 번 묻고, 전부 답이 없을 때만 "답 없음"으로 본다.
+#define BUS_KEEPALIVE_REPLY_TIMEOUT_MS 1500
+#define BUS_KEEPALIVE_ATTEMPTS 3
 
 // ---------------------------------------------------------------------------
 // Pelco-D 터널 (RS485 <-> IP <-> RS485, src/TunnelBridge.h)

@@ -107,11 +107,11 @@ void markModeKnown(uint8_t camNumber, uint8_t bit) {
 // ---------------------------------------------------------------------------
 // Auto Power Control
 // ---------------------------------------------------------------------------
-// 카메라별 슬롯 옵션(CameraSlot::autoPowerControl)이 켜졌을 때, RS485 버스가 얼마나
-// "재잘거리는지"만 보고 카메라 전원을 자동으로 켜고/대기시킨다.
+// 카메라별 슬롯 옵션(CameraSlot::autoPowerControl)이 켜졌을 때, RS485 버스가 재잘거리면
+// 카메라 전원을 켜고, 버스가 조용한데 1번 카메라도 생존 신호에 답하지 않으면 대기시킨다.
 //
-// target(목표)과 confirmed(실측 확인) 상태를 따로 둔다 - updateAutoPowerFromChatter()가
-// target을 정하고, reconcileAutoPower()가 target에 맞는 VISCA 명령을 보낸 뒤 실측으로
+// target(목표)과 confirmed(실측 확인) 상태를 따로 둔다 - updateAutoPowerFromChatter()(On)와
+// pollBusKeepalive()(Standby)가 target을 정하고, reconcileAutoPower()가 target에 맞는 VISCA 명령을 보낸 뒤 실측으로
 // confirmed를 따라잡을 때까지 재시도한다. 명령을 보낸 순간 낙관적으로 상태를 갱신하지
 // 않는 이유는, 카메라가 명령을 거부하거나(예: 이미 그 상태) 아예 응답하지 않는 경우를
 // "실제로 그렇게 됐다"고 잘못 믿지 않기 위해서다.
@@ -150,9 +150,29 @@ bool autoPowerEligible(const CameraSlot* slot) {
 // 호출한다.
 uint16_t autoPowerChatterCount = 0;
 unsigned long autoPowerWindowStartMs = 0;
+// 마지막으로 버스 활동(위 카운트에 들어가는 패킷)을 본 시각 - 침묵 판정(AUTO_POWER_QUIET_MS)의
+// 근거다. 생존 신호의 답은 여기에 들어가지 않는다(handlePelcoDPacket()).
+unsigned long autoPowerLastChatterMs = 0;
 
 void recordAutoPowerChatterPacket() {
   if (autoPowerChatterCount < 0xFFFF) autoPowerChatterCount++;
+  autoPowerLastChatterMs = millis();
+}
+
+// 자동 전원 대상 슬롯 전부의 목표를 바꾼다. 목표가 실제로 바뀔 때만(edge-triggered) 재시도
+// backoff를 초기화하고 즉시 시도하게 예약한다 - 조건이 계속 유지되는 동안 같은 명령을 다시
+// 만들어내지 않기 위함이다. 명령 전송/확인/재시도는 reconcileAutoPower()가 전담한다.
+void setAutoPowerTargetAll(AutoPowerState desired, unsigned long now) {
+  for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
+    if (!autoPowerEligible(routingTable.camera(camNumber))) continue;
+    uint8_t i = camNumber - 1;
+    if (desired == autoPowerTarget[i]) continue;
+    autoPowerTarget[i] = desired;
+    autoPowerAwaitingVerify[i] = false;                      // 새 목표 - 명령부터 다시 보낸다
+    autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;    // backoff 초기화
+    autoPowerActionDueMs[i] = now;                            // 다음 reconcile tick에 바로 시도
+    autoPowerTunnelSends[i] = 0;
+  }
 }
 
 // 지금 답을 기다리는 중인 조회. VISCA 조회 응답이 전부 `y0 50 pp FF`로 똑같이 생겨서,
@@ -356,25 +376,43 @@ void pollWebRs485Tx() {
   }
 }
 
-// 버스 생존 신호 (config.h BUS_KEEPALIVE_* 참고). 웹 송신 큐를 태워 버스 유휴 규칙을
-// 그대로 따른다. 카메라의 답도 프레임이라 lastBusFrameMs를 갱신하지만, 답이 없을 때도
-// 간격이 지켜지도록 마지막 송신 시각을 따로 둔다.
-unsigned long lastBusKeepaliveMs = 0;
+// 버스 생존 신호 (config.h BUS_KEEPALIVE_* 참고). 버스가 조용해지면 1번 카메라에 묻고,
+// 답이 없으면 Auto Power 슬롯을 Standby로 내린다. 웹 송신 큐를 태워 버스 유휴 규칙을
+// 그대로 따른다.
+//
+//   감지 ──(30초 침묵)──> 묻기 ──답 있음──> 10분 뒤 다시 묻기
+//    ^                     └──3번 다 답 없음──> Standby, 10분 뒤 다시 묻기
+//    └──────────(그 사이 버스 활동이 하나라도 오면)──────────┘
+bool keepaliveActive = false;        // 침묵 구간 안에 있다 (false = 평소 감지)
+bool keepaliveWaiting = false;       // 질문을 보내고 답을 기다리는 중
+bool keepaliveAnswered = false;      // 기다리는 동안 1번의 D7 19가 왔다
+uint8_t keepaliveAttempts = 0;       // 이번 묻기에서 보낸 횟수
+unsigned long keepaliveSentMs = 0;
+unsigned long keepaliveNextMs = 0;   // 다음 묻기 시각
 
-void pollBusKeepalive() {
-  const SystemConfig& cfg = routingTable.get();
+// 이 버스의 1번에게 물을 수 있는가. 1번이 IP 카메라나 터널이면 이 버스에 실물이 없고,
+// Pelco-D가 아니면 프레임을 만들 수 없다.
+bool canSendKeepalive(const SystemConfig& cfg) {
   if (cfg.inputProtocol != InputProtocol::PELCO_D && cfg.inputProtocol != InputProtocol::PELCO_AUTO) {
-    return;
+    return false;
   }
-  // 1번이 IP 카메라나 터널이면 이 버스에 실물이 없다 - 물어볼 상대가 없다.
   const CameraSlot* slot = routingTable.camera(BUS_KEEPALIVE_CAM);
-  if (slot == nullptr || slot->isConfigured() || slot->isTunnel()) return;
+  return slot != nullptr && !slot->isConfigured() && !slot->isTunnel();
+}
 
-  unsigned long now = millis();
-  if (now - lastBusFrameMs < BUS_KEEPALIVE_INTERVAL_MS) return;
-  if (now - lastBusKeepaliveMs < BUS_KEEPALIVE_INTERVAL_MS) return;
-  lastBusKeepaliveMs = now;
+// handlePelcoDPacket()이 버스 활동으로 세기 전에 부른다. 기다리는 중에 온 1번의 D7 19면
+// 생존 신호의 답으로 받아들이고 true를 반환한다 - 그 답은 버스 활동으로 세지 않는다.
+bool consumeKeepaliveReply(const uint8_t* data, uint8_t len) {
+  if (!keepaliveWaiting || len != PELCO_D_PACKET_LEN) return false;
+  if (data[1] != BUS_KEEPALIVE_CAM || data[3] != PELCO_EDIS_QUERY_RESPONSE ||
+      data[4] != PELCO_EDIS_QUERY_MODE_STATUS) {
+    return false;
+  }
+  keepaliveAnswered = true;
+  return true;
+}
 
+void sendKeepalive(const SystemConfig& cfg, unsigned long now) {
   uint8_t frame[PELCO_D_PACKET_LEN] = {PELCO_D_START_BYTE, BUS_KEEPALIVE_CAM, 0x00,
                                        PELCO_EDIS_QUERY_CMD, PELCO_EDIS_QUERY_MODE_STATUS, 0xE6, 0};
   uint8_t sum = 0;
@@ -382,12 +420,66 @@ void pollBusKeepalive() {
   frame[PELCO_D_PACKET_LEN - 1] = sum;
   webTxEnqueue(frame, /*priority=*/false);
 
+  keepaliveWaiting = true;
+  keepaliveAnswered = false;
+  keepaliveAttempts++;
+  keepaliveSentMs = now;
+
   if (cfg.debugMode) {
     Serial.print("[KEEPALIVE] CAM");
     Serial.print(BUS_KEEPALIVE_CAM);
     Serial.print(" <- ");
     Serial.println(viscaBytesToHex(frame, PELCO_D_PACKET_LEN));
   }
+}
+
+void pollBusKeepalive() {
+  const SystemConfig& cfg = routingTable.get();
+  unsigned long now = millis();
+
+  // 버스 활동이 있다 - 묻기를 멈추고 평소 감지로 돌아간다.
+  if (now - autoPowerLastChatterMs < AUTO_POWER_QUIET_MS) {
+    keepaliveActive = false;
+    keepaliveWaiting = false;
+    return;
+  }
+
+  if (!keepaliveActive) {  // 막 조용해졌다 - 바로 묻는다
+    keepaliveActive = true;
+    keepaliveWaiting = false;
+    keepaliveNextMs = now;
+  }
+
+  if (keepaliveWaiting) {
+    if (keepaliveAnswered) {
+      // 1번이 살아 있다 = 장비 전원은 들어와 있고 컨트롤러만 조용하다. 전원은 그대로 둔다.
+      keepaliveWaiting = false;
+      keepaliveNextMs = now + BUS_KEEPALIVE_INTERVAL_MS;
+      if (cfg.debugMode) Serial.println("[KEEPALIVE] CAM1 answered - power left as is");
+      return;
+    }
+    if (now - keepaliveSentMs < BUS_KEEPALIVE_REPLY_TIMEOUT_MS) return;
+    if (keepaliveAttempts < BUS_KEEPALIVE_ATTEMPTS) {
+      sendKeepalive(cfg, now);
+      return;
+    }
+    keepaliveWaiting = false;
+    keepaliveNextMs = now + BUS_KEEPALIVE_INTERVAL_MS;
+    if (cfg.debugMode) Serial.println("[KEEPALIVE] CAM1 no answer - auto power slots to Standby");
+    setAutoPowerTargetAll(AutoPowerState::OFF, now);
+    return;
+  }
+
+  if ((long)(now - keepaliveNextMs) < 0) return;
+
+  if (!canSendKeepalive(cfg)) {
+    // 물어볼 상대가 없으면 예전처럼 침묵만으로 판단한다.
+    keepaliveNextMs = now + BUS_KEEPALIVE_INTERVAL_MS;
+    setAutoPowerTargetAll(AutoPowerState::OFF, now);
+    return;
+  }
+  keepaliveAttempts = 0;
+  sendKeepalive(cfg, now);
 }
 
 const char* protocolTag(ProtocolMode mode) {
@@ -1434,7 +1526,7 @@ void sendPelcoDResponse(const uint8_t* data, uint8_t len) {
 void handlePelcoDPacket(const uint8_t* data, uint8_t len) {
   diagnostics.recordRs485Rx(data, len);
   statusLed.notifyRs485Signal();
-  recordAutoPowerChatterPacket();
+  if (!consumeKeepaliveReply(data, len)) recordAutoPowerChatterPacket();
 
   SystemConfig& cfg = routingTable.get();
   lastBusFrameMs = millis();
@@ -2075,12 +2167,11 @@ bool sendAutoPowerCommand(uint8_t camNumber, bool on, const SystemConfig& cfg) {
   return true;
 }
 
-// 텀블링 10초 윈도우가 닫힐 때마다 그 안에 관측된 유효 패킷 수로 auto power control이
-// 켜진 카메라들의 목표(target) 상태를 정한다 (config.h AUTO_POWER_* 참고). 실제 VISCA
-// 명령은 여기서 보내지 않는다 - 목표만 바꿔두고, reconcileAutoPower()가 명령 전송/확인/
-// 재시도를 전담한다. 목표가 실제로 바뀔 때만(edge-triggered) 재시도 backoff를 초기화하고
-// 즉시 시도하게 예약한다 - 조건이 계속 유지되는 동안 매 윈도우마다 같은 명령을 다시
-// 만들어내지 않기 위함이다.
+// 텀블링 10초 윈도우가 닫힐 때마다 그 안에 관측된 유효 패킷 수가 AUTO_POWER_ON_THRESHOLD
+// 이상이면 auto power control이 켜진 카메라들의 목표(target)를 On으로 정한다. 켜는 쪽만
+// 여기서 판단한다 - Standby는 침묵 + 생존 신호(pollBusKeepalive())가 정한다. 실제 명령은
+// 여기서 보내지 않는다 - 목표만 바꿔두고, reconcileAutoPower()가 명령 전송/확인/재시도를
+// 전담한다.
 void updateAutoPowerFromChatter() {
   unsigned long now = millis();
   if (now - autoPowerWindowStartMs < AUTO_POWER_CHATTER_WINDOW_MS) return;
@@ -2089,25 +2180,7 @@ void updateAutoPowerFromChatter() {
   autoPowerChatterCount = 0;
   autoPowerWindowStartMs = now;
 
-  for (uint8_t camNumber = 1; camNumber <= CAMERA_SLOT_COUNT; camNumber++) {
-    CameraSlot* slot = routingTable.camera(camNumber);
-    if (!autoPowerEligible(slot)) continue;
-
-    uint8_t i = camNumber - 1;
-    AutoPowerState desired = autoPowerTarget[i];
-    if (count >= AUTO_POWER_ON_THRESHOLD) desired = AutoPowerState::ON;
-    else if (count == 0) desired = AutoPowerState::OFF;
-    // count가 1~2개면 desired를 안 바꾼다 - 켤지 끌지 판단하기엔 근거가 애매한 경계
-    // 구간이라, 위에서 desired를 현재 target으로 초기화해뒀으므로 자연히 유지된다.
-
-    if (desired != autoPowerTarget[i]) {
-      autoPowerTarget[i] = desired;
-      autoPowerAwaitingVerify[i] = false;                      // 새 목표 - 명령부터 다시 보낸다
-      autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;    // backoff 초기화
-      autoPowerActionDueMs[i] = now;                            // 다음 reconcile tick에 바로 시도
-      autoPowerTunnelSends[i] = 0;
-    }
-  }
+  if (count >= AUTO_POWER_ON_THRESHOLD) setAutoPowerTargetAll(AutoPowerState::ON, now);
 }
 
 // target(목표)과 confirmed(실측 확인) 상태가 다른 카메라에 대해 VISCA CAM_Power 명령을
@@ -2401,6 +2474,7 @@ void setup() {
   // 부팅 직후 아직 아무 트래픽도 못 봤는데 millis()가 이미 10초를 넘긴 걸로 오판해
   // 곧장 Standby부터 내려버리는 걸 막는다 - 첫 윈도우도 정상적으로 10초를 채우게 한다.
   autoPowerWindowStartMs = millis();
+  autoPowerLastChatterMs = autoPowerWindowStartMs;  // 침묵 판정도 부팅 시각부터 센다
 
   rs485.begin(cfg.rs485Baudrate, cfg.rs485RxPin, cfg.rs485TxPin, cfg.rs485DeRePin,
               cfg.rs485Invert);
