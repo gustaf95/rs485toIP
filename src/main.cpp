@@ -172,6 +172,11 @@ void setAutoPowerTargetAll(AutoPowerState desired, unsigned long now) {
     autoPowerRetryDelayMs[i] = AUTO_POWER_VERIFY_DELAY_MS;    // backoff 초기화
     autoPowerActionDueMs[i] = now;                            // 다음 reconcile tick에 바로 시도
     autoPowerTunnelSends[i] = 0;
+    // 터널 슬롯의 confirmed는 컨트롤러가 그 카메라를 폴링할 때만 갱신된다. 컨트롤러가 꺼진
+    // 동안 보낸 Standby는 확인될 길이 없어서, 그 전의 ON이 그대로 남는다 - 그걸 믿으면 다시
+    // 켜야 할 때 "이미 ON"으로 보고 아무것도 안 보낸다. 전원 명령은 토글이 아니라 값이라
+    // 한 번 더 보내도 해가 없으니, 목표가 바뀌면 옛 기억을 버리고 일단 보낸다.
+    if (routingTable.camera(camNumber)->isTunnel()) autoPowerConfirmed[i] = AutoPowerState::UNKNOWN;
   }
 }
 
@@ -2212,8 +2217,11 @@ void reconcileAutoPower() {
     // 터널로 보낸다. 웹 제어 패널의 전원 버튼과 같은 경로다(webSetMode). 확인 조회는 끼워
     // 넣지 않는다 - 확인은 sniffBusFrame()이 컨트롤러의 전원 조회 답을 엿들어 confirmed를
     // 채울 때만 일어나고, 그 전까지 정해진 횟수만 다시 보낸다(AUTO_POWER_TUNNEL_SENDS).
+    // 터널 상대가 최근에 들리지 않으면 길이 끊긴 것이라 보내지도 세지도 않고 기다린다.
     if (slot->isTunnel()) {
       if (autoPowerTunnelSends[i] >= AUTO_POWER_TUNNEL_SENDS) continue;
+      unsigned long lastPeerMs = tunnelBridge.stats().lastPeerMs;
+      if (lastPeerMs == 0 || (long)(now - lastPeerMs) > (long)AUTO_POWER_TUNNEL_PEER_FRESH_MS) continue;
       bool on = (autoPowerTarget[i] == AutoPowerState::ON);
       String err;
       if (webSetMode(camNumber, /*viaIp=*/false, VISCA_CAM_POWER, VISCA_CAM_POWER,

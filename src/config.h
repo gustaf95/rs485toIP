@@ -269,6 +269,11 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 // 전원 조회 답을 엿들어서만 하고, 목표가 바뀔 때마다 AUTO_POWER_VERIFY_DELAY_MS 간격으로 최대
 // 이 횟수만 보낸다. Standby 쪽은 컨트롤러가 꺼져 있어 확인할 길이 없으니 이 횟수가 전부다.
 #define AUTO_POWER_TUNNEL_SENDS 3
+// 터널 슬롯에 전원 명령을 보내기 전에, 터널 상대(카메라 쪽)에게서 이 시간 안에 무언가
+// (생존 신호는 TUNNEL_HEARTBEAT_MS마다 온다)를 들었는지 본다. 못 들었으면 길이 끊긴
+// 것이므로 보내지도, 위 횟수를 줄이지도 않고 기다린다. 전체 전원이 들어올 때 공유기나
+// 확장기가 아직 안 떠서 3번이 허공으로 사라지고 4번이 안 깨던 문제 때문이다.
+#define AUTO_POWER_TUNNEL_PEER_FRESH_MS 2000
 
 // ---- Pelco-D framing ----
 // Pelco-D 프레임은 항상 0xFF로 시작하고 길이가 고정 7바이트다
