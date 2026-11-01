@@ -795,6 +795,16 @@ uint8_t scalePelcoSpeedToVisca(uint8_t pelcoSpeed, uint8_t viscaMax) {
   return (uint8_t)scaled;
 }
 
+// CAM_Focus Far/Near의 값 바이트. VISCA_FOCUS_SPEED가 0~7이면 가변속(2p/3p), 아니면
+// 고정속(02/03)이다 (config.h 주석 참고).
+uint8_t viscaFocusDriveValue(bool far) {
+#if VISCA_FOCUS_SPEED >= 0 && VISCA_FOCUS_SPEED <= 7
+  return (uint8_t)((far ? 0x20 : 0x30) | VISCA_FOCUS_SPEED);
+#else
+  return far ? 0x02 : 0x03;
+#endif
+}
+
 // Pelco-D/P에서 번역된 VISCA 명령 하나를 카메라로 전달한다. handleViscaPacket()과
 // 다르게 RS485로 VISCA용 합성 ACK/Completion을 돌려보내지 않는다 - Pelco 쪽 ACK은
 // sendPelcoDResponse()/sendPelcoPResponse()가 이미 Pelco 포맷으로 담당하고 있어서,
@@ -1366,7 +1376,7 @@ bool translatePelcoAndForward(uint8_t camNumber, uint8_t cmnd1, uint8_t cmnd2, u
     scheduleMenuInquiry(camNumber);
     acted = true;
   } else if (focusNear || focusFar) {
-    uint8_t buf[6] = {0, 0x01, 0x04, 0x08, (uint8_t)(focusFar ? 0x02 : 0x03), VISCA_TERMINATOR};
+    uint8_t buf[6] = {0, 0x01, 0x04, 0x08, viscaFocusDriveValue(focusFar), VISCA_TERMINATOR};
     forwardTranslatedVisca(camNumber, buf, sizeof(buf), debugTag);
     acted = true;
   }
@@ -1791,7 +1801,7 @@ bool webExecuteCommand(uint8_t cam, const String& action, int p1, int p2, String
     if (p1 == 0) return webStop(cam, viaIp, err);
     hold = true;
     if (viaIp) {
-      uint8_t buf[6] = {0, 0x01, 0x04, 0x08, (uint8_t)(p1 > 0 ? 0x02 : 0x03), VISCA_TERMINATOR};
+      uint8_t buf[6] = {0, 0x01, 0x04, 0x08, viscaFocusDriveValue(p1 > 0), VISCA_TERMINATOR};
       forwardTranslatedVisca(cam, buf, sizeof(buf), "WEB");
       ok = true;
     } else {

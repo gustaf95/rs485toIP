@@ -484,12 +484,15 @@ Group/Swing/Aux/Initialize는 양쪽 모두 근거가 없어 구현 대상에서
 | 대각선 4종 | 위 비트 OR 조합 | `p3`/`p4`를 각각 `01`/`02`로 | 📖 (7.1절 FoMaKo 표에 별도 행 존재) |
 | Zoom Tele | CMND2 bit5 (`0x20`) | `8x 01 04 07 02 FF` | 📖 |
 | Zoom Wide | CMND2 bit6 (`0x40`) | `8x 01 04 07 03 FF` | 📖 |
-| Focus Near | CMND1 bit0 (`0x01`) | `8x 01 04 08 03 FF` | 🔬 `FF 06 01 00 00 00 07` 캡처 |
-| Focus Far | CMND2 bit7 (`0x80`) | `8x 01 04 08 02 FF` | 📖 |
+| Focus Near | CMND1 bit0 (`0x01`) | `8x 01 04 08 30 FF` (가변속 p=0, 아래 참고) | 🔬 `FF 06 01 00 00 00 07` 캡처 |
+| Focus Far | CMND2 bit7 (`0x80`) | `8x 01 04 08 20 FF` (가변속 p=0, 아래 참고) | 📖 |
 | **Iris Open** | CMND1 bit1 (`0x02`) | `8x 01 04 0B 02 FF` | 🔬 `FF 06 02 00 00 00 08` 캡처 + 동작 확인 (2026-08-08) |
 | **Iris Close** | CMND1 bit2 (`0x04`) | `8x 01 04 0B 03 FF` | 🔬 동작 확인 (2026-08-08) |
 | Stop | CMND1=CMND2=`0x00` | `06 01 01 01 03 03` + `04 07 00` + `04 08 00` 3개 | 🔬 `FF 06 00 00 00 00 06` 캡처 |
 
+- **Focus 속도**: 고정속(`04 08 02`/`03`)으로는 키를 짧게 눌러도 초점이 크게 넘어가서, 가장
+  느린 가변속(`04 08 2p`/`3p`, p=0)으로 보낸다(`VISCA_FOCUS_SPEED`). 📖 FoMaKo 매뉴얼 5.2절
+  `CAM_Focus` 표에 있는 명령이지만 실측 전이다 - 포커스가 안 먹으면 `-1`로 고정속에 되돌린다.
 - **Pan/Tilt 속도**: DATA1/DATA2 `0x00~0x3F` → VISCA `VV`(`0x01~0x18`) / `WW`(`0x01~0x14`)
   선형 환산(`scalePelcoSpeedToVisca()`). 🔬 컨트롤러가 팬/틸트 양쪽 모두 `0x3F`까지 보내는 것을
   확인했고(11절), 📖 VISCA 상한도 매뉴얼 `Pan_tiltDrive` 항목과 일치한다. 터보(`0xFF`)는 미관측.

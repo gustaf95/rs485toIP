@@ -206,6 +206,14 @@ constexpr uint8_t RS485_BAUD_CHOICE_COUNT =
 // (실측 2026-08-08). 반대로 너무 일찍 되돌리면 초점을 잡는 도중에 끊어버리므로,
 // AF 한 번이 끝날 여유를 주는 값이어야 한다.
 #define VISCA_ONE_PUSH_AF_SETTLE_MS 2000
+// 수동 포커스(Near/Far) 속도. 0(가장 느림)~7이면 가변속 `04 08 2p`(Far)/`3p`(Near)로,
+// 그 밖의 값(예: -1)이면 예전의 고정속 `04 08 02`/`03`(Standard)으로 보낸다. 컨트롤러는
+// 키를 짧게 눌러도 Near/Far 뒤에 Stop을 보내므로 한 번에 움직이는 양은 "속도 x 누른
+// 시간"이고, 고정속으로는 짧게 눌러도 초점이 크게 넘어갔다. 가변속은 FoMaKo 매뉴얼
+// 5.2절 CAM_Focus 표에 있으나 실측 전이다 - 카메라가 E0 60 02 FF(Syntax Error)를
+// 돌려주고 포커스가 안 움직이면 -1로 되돌린다. RS485 카메라(ED-P)는 Pelco-D 포커스
+// 명령에 속도 필드가 없어 이 값과 무관하다.
+#define VISCA_FOCUS_SPEED 0
 
 // 카메라의 AE/WB/Focus 모드를 VISCA로 조회해 캐시를 갱신하는 주기와, 한 조회의
 // 응답을 기다리는 시간. VISCA 조회 응답은 셋 다 `y0 50 pp FF`로 똑같이 생겨서 어느

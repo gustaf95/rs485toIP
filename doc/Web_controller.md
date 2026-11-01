@@ -123,7 +123,7 @@ AP는 STA 연결 여부와 무관하게 항상 떠 있고 Wi-Fi 비밀번호 하
 | 드래그 패드 | `01 06 01 vv ww p3 p4` | CMND2 비트(상 08/하 10/좌 04/우 02) + 속도 |
 | 손 뗌 / Stop | Pan-Tilt·Zoom·Focus Stop 3종 | `FF A 00 00 00 00 CK` |
 | TELE / WIDE | `01 04 07 02/03` (Z-SPD 지정 시 `2p`/`3p`) | CMND2 0x20 / 0x40 |
-| NEAR / FAR | `01 04 08 03 / 02` | CMND1 bit0 / CMND2 bit7 |
+| NEAR / FAR | `01 04 08 30 / 20` (가변속 p=0, `VISCA_FOCUS_SPEED`) | CMND1 bit0 / CMND2 bit7 |
 | IRIS OPEN / CLOSE | `01 04 0B 02/03` | CMND1 bit1 / bit2 |
 | PRESET GOTO/SET/CLEAR | `01 04 3F 02/01/00 pp` | Extended 0x07 / 0x03 / 0x05 |
 | POWER ON / STANDBY | `01 04 00 02/03` | `C3 00 02/03` |
