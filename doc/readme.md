@@ -1927,6 +1927,8 @@ MENU 키만 비활성이다 — 그 키가 보내는 바이트를 한 번도 캡
 인터페이스로 확정했고, PC 쪽 래퍼 CLI [`tools/ptz.py`](../tools/ptz.py)가 그 위에 있다
 (`ptz.py 6 preset goto 3`). 명령 어휘, deadman 규약, 속도 한계, 검토했다가 접은 대안들
 (UDP Pelco-D, 텍스트 프로토콜, VISCA over IP)은 **[cli_interface.md](cli_interface.md)** 에 있다.
+다른 프로그램을 붙일 때 볼 규격(요청/응답, 상태 JSON, 오류, 예제)은
+**[gateway_interface.md](gateway_interface.md)** 에 정리했다.
 
 ---
 
